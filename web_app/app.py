@@ -12,14 +12,14 @@ st.set_page_config(page_title="CAMPSMAP Unlimited", page_icon="📸")
 st.title("📸 CAMPSMAP (무제한 적립 모드)")
 st.markdown("""
 **대용량 처리 전용 모드입니다.**
-1. 사진을 나눠서 업로드하고 **[변환 및 보관함에 추가]**를 누르세요.
-2. RAM을 비우고 보관함(Disk)에 결과물을 쌓아둡니다.
-3. 다 끝났으면 사이드바에서 **[ZIP 다운로드]**를 누르세요.
+1. 사진을 업로드하고 **[변환 및 보관함에 추가]**를 누르세요.
+2. RAM을 비우고 보관함(Disk)에 결과물을 차곡차곡 쌓습니다.
+3. 모든 작업이 끝나면 사이드바에서 **[ZIP 다운로드]**를 하세요.
 """)
 
 # --- 세션 스테이트 초기화 (보관함 만들기) ---
 if 'storage_path' not in st.session_state:
-    # 임시 폴더 생성 (서버 디스크 사용)
+    # 임시 폴더 생성
     temp_dir = tempfile.mkdtemp()
     st.session_state['storage_path'] = temp_dir
     st.session_state['file_count'] = 0
@@ -62,41 +62,53 @@ def load_filters():
 
 # --- 이미지 처리 함수 ---
 def process_and_save(image, save_dir, filename_prefix, loaded_filters):
-    # RGB 변환
-    if image.mode != 'RGB': image = image.convert('RGB')
+    # 1. RGB 변환
+    if image.mode != 'RGB': 
+        image = image.convert('RGB')
     
-    # NumPy 변환
+    # 2. 리사이징 (중요: 속도 및 메모리 보호)
+    # 긴 축을 2500px로 줄임 (필름 감성에는 충분한 화질)
+    image.thumbnail((2500, 2500), Image.Resampling.LANCZOS)
+    
+    # 3. NumPy 변환 및 베이스 효과 (그레인/비네팅)
     img_arr = np.array(image, dtype=np.float32)
-    
-    # 그레인 & 비네팅 (베이스 효과)
     h, w, c = img_arr.shape
-    noise = np.random.normal(0, 12, (h, w)) # 노이즈
+    
+    # 노이즈 (Grain)
+    noise = np.random.normal(0, 12, (h, w))
     noise = np.repeat(noise[:, :, np.newaxis], 3, axis=2)
     
+    # 비네팅 (Vignette)
     x = np.linspace(-1, 1, w)
     y = np.linspace(-1, 1, h)
     X, Y = np.meshgrid(x, y)
     radius = np.sqrt(X**2 + Y**2)
-    mask = 1 - np.clip(radius - 0.5, 0, 1) * 0.4 # 비네팅
+    mask = 1 - np.clip(radius - 0.5, 0, 1) * 0.4
     mask = np.repeat(mask[:, :, np.newaxis], 3, axis=2)
     
+    # 효과 적용
     img_arr = (img_arr + noise) * mask
     img_arr = np.clip(img_arr, 0, 255).astype(np.uint8)
     
-    # 베이스 이미지 생성
+    # 베이스 이미지 객체 생성
     base_img = Image.fromarray(img_arr)
     
-    # 필터 적용 및 저장
+    # 4. 필터 적용 및 저장
     saved_count = 0
     for filter_name, lut_data in loaded_filters.items():
         try:
+            # LUT 적용
             final = base_img.point(lut_data)
             
+            # 파일 저장
             save_name = f"{filename_prefix}_{filter_name}.jpg"
             save_path = os.path.join(save_dir, save_name)
             
-            final.save(save_path, quality=92, subsampling=0)
+            # subsampling=0 : 고화질 JPG 저장
+            final.save(save_path, quality=95, subsampling=0)
             saved_count += 1
+            
+            # 메모리 해제
             del final
         except:
             continue
@@ -105,85 +117,93 @@ def process_and_save(image, save_dir, filename_prefix, loaded_filters):
 
 # --- 메인 로직 ---
 loaded_filters = load_filters()
-if not loaded_filters:
-    st.warning("⚠️ 필터 파일 없음 (Filters 폴더 확인)")
 
-# 사이드바: 보관함 상태 표시
+# 사이드바: 보관함 및 다운로드
 with st.sidebar:
     st.header(f"📦 보관함: {st.session_state['file_count']}장")
-    st.caption(f"저장 위치: {st.session_state['storage_path']}")
+    st.caption(f"임시 경로: {st.session_state['storage_path']}")
     
+    # 보관함에 파일이 있을 때만 다운로드 버튼 표시
     if st.session_state['file_count'] > 0:
+        st.divider()
+        st.write("작업이 끝났으면 다운로드하세요.")
+        
+        # ZIP 압축 파일 생성 (매번 새로 압축하지 않도록 버튼 누를 때 로직 처리 권장하지만, 간편함을 위해 여기 배치)
+        shutil.make_archive(st.session_state['storage_path'], 'zip', st.session_state['storage_path'])
+        zip_file_path = st.session_state['storage_path'] + ".zip"
+        
+        with open(zip_file_path, "rb") as f:
+            st.download_button(
+                label="📥 전체 ZIP 다운로드",
+                data=f,
+                file_name="CAMPSMAP_Result.zip",
+                mime="application/zip"
+            )
+            
+        st.divider()
         if st.button("🗑️ 보관함 비우기 (초기화)"):
             shutil.rmtree(st.session_state['storage_path'])
             os.makedirs(st.session_state['storage_path'])
             st.session_state['file_count'] = 0
             st.rerun()
+
+# 메인 화면: 업로더
+if not loaded_filters:
+    st.error("⚠️ 서버에 필터 파일이 없습니다. (Filters 폴더를 확인하세요)")
+else:
+    st.info("💡 사진을 여러 번 나눠서 올려도 됩니다. 모두 합쳐서 다운로드됩니다.")
+    
+    # 업로더 Key를 동적으로 관리하여 처리 후 자동 초기화
+    dynamic_key = st.session_state['uploader_key']
+    uploaded_files = st.file_uploader(
+        "사진 추가 (Drag & Drop)", 
+        type=['png', 'jpg', 'jpeg'], 
+        accept_multiple_files=True,
+        key=dynamic_key
+    )
+
+    if uploaded_files:
+        if st.button(f"🚀 {len(uploaded_files)}장 변환 시작"):
             
-        st.divider()
-        st.write("작업이 모두 끝났으면 다운로드하세요.")
-        
-        # 압축 및 다운로드 버튼
-        shutil.make_archive(st.session_state['storage_path'], 'zip', st.session_state['storage_path'])
-        zip_path = st.session_state['storage_path'] + ".zip"
-        
-        with open(zip_path, "rb") as f:
-            st.download_button(
-                label="📥 전체 ZIP 다운로드",
-                data=f,
-                file_name="CAMPSMAP_Full_Batch.zip",
-                mime="application/zip"
-            )
-
-# 메인 화면: 업로드 및 변환
-st.info("💡 50장씩 끊어서 올리면 절대 멈추지 않습니다. 계속 추가하세요!")
-
-# key를 변경해서 업로더를 강제로 초기화하는 기술
-uploader_key = f"uploader_{st.session_state['uploader_key']}"
-uploaded_files = st.file_uploader("사진 추가 (여러 장 가능)", 
-                                  type=['png', 'jpg', 'jpeg'], 
-                                  accept_multiple_files=True,
-                                  key=uploader_key)
-
-if uploaded_files and loaded_filters:
-    if st.button(f"🚀 {len(uploaded_files)}장 변환 및 보관함에 추가"):
-        
-        progress_bar = st.progress(0)
-        status_text = st.empty()
-        
-        total_files = len(uploaded_files)
-        current_batch_count = 0
-        
-        for idx, uploaded_file in enumerate(uploaded_files):
-            try:
-                status_text.text(f"처리 중 ({idx+1}/{total_files}): {uploaded_file.name}")
-                progress_bar.progress((idx) / total_files)
+            progress_bar = st.progress(0)
+            status_text = st.empty()
+            total_files = len(uploaded_files)
+            processed_now = 0
+            
+            for idx, uploaded_file in enumerate(uploaded_files):
+                status_text.text(f"처리 중... ({idx+1}/{total_files}) : {uploaded_file.name}")
                 
-                # 이미지 열기
-                image = Image.open(uploaded_file)
-                image = ImageOps.exif_transpose(image)
+                try:
+                    # 이미지 열기
+                    image = Image.open(uploaded_file)
+                    image = ImageOps.exif_transpose(image) # 회전 정보 보정
+                    
+                    # 파일명 추출
+                    filename_prefix = os.path.splitext(uploaded_file.name)[0]
+                    
+                    # 처리 및 저장 함수 호출
+                    count = process_and_save(
+                        image, 
+                        st.session_state['storage_path'], 
+                        filename_prefix, 
+                        loaded_filters
+                    )
+                    processed_now += count
+                    
+                except Exception as e:
+                    st.error(f"오류 발생 ({uploaded_file.name}): {e}")
                 
-                # 안전장치: 초고해상도 리사이징 (서버 보호)
-                if image.width > 4000 or image.height > 4000:
-                    image.thumbnail((4000, 4000), Image.Resampling.LANCZOS)
-                
-                file_prefix = os.path.splitext(uploaded_file.name)[0]
-                
-                # 처리 및 저장 (Disk에 바로 씀)
-                count = process_and_save(image, st.session_state['storage_path'], file_prefix, loaded_filters)
-                current_batch_count += count
-                
-                # 메모리 청소
-                del image
+                # 메모리 강제 정리 (대량 작업 시 필수)
                 gc.collect()
                 
-            except Exception as e:
-                st.error(f"오류 ({uploaded_file.name}): {e}")
-                continue
-                
-        # 배치 작업 완료 후 처리
-        st.session_state['file_count'] += current_batch_count
-        st.session_state['uploader_key'] += 1 # 키를 바꿔서 업로더 초기화
-        
-        st.success(f"✅ {len(uploaded_files)}장 처리 완료! 보관함에 총 {st.session_state['file_count']}장이 쌓였습니다.")
-        st.rerun() # 화면 새로고침해서 업로더 비우기
+                # 진행률 업데이트
+                progress_bar.progress((idx + 1) / total_files)
+            
+            # 작업 완료 후 처리
+            st.session_state['file_count'] += processed_now
+            st.session_state['uploader_key'] += 1 # 키를 변경하여 업로더 초기화
+            
+            status_text.success(f"✅ 방금 {processed_now}장의 사진이 보관함에 추가되었습니다!")
+            
+            # 화면 갱신 (업로더 비우고 사이드바 카운트 업데이트)
+            st.rerun()
