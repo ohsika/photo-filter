@@ -11,8 +11,8 @@ import math
 # --- 페이지 설정 ---
 st.set_page_config(page_title="CAMPSMAP Final", page_icon="📸")
 
-st.title("📸 CAMPSMAP (대용량 통합)")
-st.info("💡 **300장씩** 꽉 채워서 포장합니다. 파일 개수를 확 줄였습니다.")
+st.title("📸 CAMPSMAP (안전/고속)")
+st.info("💡 **100장씩** 묶어서 포장합니다. (서버 다운 방지 + 버튼 개수 최소화)")
 
 # --- 세션 초기화 ---
 if 'storage_path' not in st.session_state:
@@ -84,7 +84,7 @@ else:
                 try:
                     img = Image.open(uploaded_file).convert('RGB')
                     img = ImageOps.exif_transpose(img)
-                    # 1000px 유지 (서버 안전)
+                    # 1000px 리사이징 (램 절약 필수)
                     img.thumbnail((1000, 1000), Image.Resampling.LANCZOS)
                     
                     img_arr = np.array(img, dtype=np.float32)
@@ -105,7 +105,8 @@ else:
                     for fname, lut in loaded_filters.items():
                         try:
                             save_path = os.path.join(st.session_state['storage_path'], f"{fname_prefix}_{fname}.jpg")
-                            base_img.point(lut).save(save_path, quality=85, subsampling=1)
+                            # subsampling=1 (용량 절약)
+                            base_img.point(lut).save(save_path, quality=90, subsampling=1)
                             processed_now += 1
                         except: pass
                     
@@ -120,7 +121,7 @@ else:
             st.success(f"✅ 변환 완료! (누적 {st.session_state['file_count']}장)")
             st.rerun()
 
-    # 3. 다운로드 섹션 (300장씩 묶음)
+    # 3. 다운로드 섹션
     if st.session_state['file_count'] > 0:
         st.divider()
         st.subheader("📥 결과물 다운로드")
@@ -131,8 +132,8 @@ else:
         if not all_files:
             st.warning("파일이 없습니다.")
         else:
-            # [수정됨] 한 번에 300장씩 묶음 (ZIP 파일 개수 대폭 감소)
-            chunk_size = 300
+            # 100장씩 나누기 (황금 밸런스)
+            chunk_size = 100
             total_chunks = math.ceil(len(all_files) / chunk_size)
             
             st.info(f"총 {len(all_files)}장을 **{total_chunks}개 파일**로 정리했습니다.")
@@ -145,21 +146,22 @@ else:
                 chunk_files = all_files[start:end]
                 
                 part_num = i + 1
-                zip_name = f"CAMPSMAP_Pack_{part_num}.zip"
+                zip_name = f"Result_Part_{part_num}.zip"
                 zip_path = os.path.join(st.session_state['storage_path'], zip_name)
                 
-                # ZIP 생성
+                # [핵심] ZIP_STORED 사용 (압축 안 함 -> CPU/RAM 사용량 0에 수렴 -> 뻑 안 남)
                 if not os.path.exists(zip_path):
-                    with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
+                    with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_STORED) as zipf:
                         for file in chunk_files:
                             file_path = os.path.join(st.session_state['storage_path'], file)
                             zipf.write(file_path, arcname=file)
                 
+                # 파일 생성 확인 후 버튼 표시
                 if os.path.exists(zip_path):
                     with open(zip_path, "rb") as f:
                         with cols[i % 2]:
                             st.download_button(
-                                label=f"📦 {part_num}번 파일 ({len(chunk_files)}장)",
+                                label=f"📦 {part_num}번 ({len(chunk_files)}장)",
                                 data=f,
                                 file_name=zip_name,
                                 mime="application/zip",
