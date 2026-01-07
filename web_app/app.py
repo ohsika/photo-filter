@@ -9,10 +9,10 @@ import zipfile
 import math
 
 # --- 페이지 설정 ---
-st.set_page_config(page_title="CAMPSMAP Stable", page_icon="📸")
+st.set_page_config(page_title="CAMPSMAP Final", page_icon="📸")
 
-st.title("📸 CAMPSMAP (안전 분할 모드)")
-st.info("💡 **사진 업로드** -> **변환** -> **자동으로 50장씩 나눠서 다운로드 버튼 생성**")
+st.title("📸 CAMPSMAP (대용량 전용)")
+st.info("💡 **몇 백 장이든 한 번에 올리세요.** 변환 후 자동으로 50장씩 나눠서 포장해드립니다.")
 
 # --- 세션 초기화 ---
 if 'storage_path' not in st.session_state:
@@ -53,10 +53,10 @@ def load_filters():
 
 loaded_filters = load_filters()
 
-# --- 사이드바 (초기화 기능) ---
+# --- 사이드바 (초기화) ---
 with st.sidebar:
-    st.header(f"📦 누적: {st.session_state['file_count']}장")
-    st.caption("작업이 꼬이거나 새로 하려면 누르세요.")
+    st.header(f"📦 완료: {st.session_state['file_count']}장")
+    st.caption("새로운 작업을 하려면 초기화를 눌러주세요.")
     if st.button("🗑️ 싹 비우기 (초기화)"):
         try: shutil.rmtree(st.session_state['storage_path'])
         except: pass
@@ -69,8 +69,8 @@ with st.sidebar:
 if not loaded_filters:
     st.error("⚠️ 필터 파일이 없습니다!")
 else:
-    # 1. 업로더
-    uploaded_files = st.file_uploader("사진을 추가하세요 (여러 번 나눠서 올려도 됩니다)", type=['png', 'jpg', 'jpeg'], accept_multiple_files=True)
+    # 1. 업로더 (제한 멘트 삭제)
+    uploaded_files = st.file_uploader("사진을 여기에 몽땅 드래그하세요", type=['png', 'jpg', 'jpeg'], accept_multiple_files=True)
 
     # 2. 변환 로직
     if uploaded_files:
@@ -80,66 +80,79 @@ else:
             status_text = st.empty()
             processed_now = 0
             
+            # [중요] 변환 루프
             for idx, uploaded_file in enumerate(uploaded_files):
-                status_text.text(f"처리 중... {uploaded_file.name}")
+                status_text.text(f"처리 중... ({idx+1}/{len(uploaded_files)})")
+                
                 try:
+                    # 이미지 열기 & 리사이징 (메모리 폭발 방지 1순위)
                     img = Image.open(uploaded_file).convert('RGB')
                     img = ImageOps.exif_transpose(img)
-                    
-                    # 리사이징 (안전빵 1500px)
-                    img.thumbnail((1500, 1500), Image.Resampling.LANCZOS)
+                    # 1280px로 제한 (인스타/웹용으로 충분하며 서버 안정성 보장)
+                    img.thumbnail((1280, 1280), Image.Resampling.LANCZOS)
                     
                     img_arr = np.array(img, dtype=np.float32)
                     h, w, c = img_arr.shape
                     
-                    # 효과 적용
+                    # 효과 적용 (Grain + Vignette)
                     noise = np.random.normal(0, 12, (h, w, 1)).repeat(3, axis=2)
+                    
+                    # 비네팅 마스크 (메모리 절약을 위해 즉시 연산)
                     x = np.linspace(-1, 1, w)
                     y = np.linspace(-1, 1, h)
                     X, Y = np.meshgrid(x, y)
                     mask = (1 - np.clip(np.sqrt(X**2 + Y**2) - 0.5, 0, 1) * 0.4)[:, :, np.newaxis].repeat(3, axis=2)
+                    
                     img_arr = (img_arr + noise) * mask
                     base_img = Image.fromarray(np.clip(img_arr, 0, 255).astype(np.uint8))
                     
+                    # 사용 끝난 거대 변수 즉시 삭제 (서버 다운 방지 핵심)
+                    del img, img_arr, noise, X, Y, mask
+                    
+                    # 필터 적용 및 저장
                     fname_prefix = os.path.splitext(uploaded_file.name)[0]
                     for fname, lut in loaded_filters.items():
                         try:
                             save_path = os.path.join(st.session_state['storage_path'], f"{fname_prefix}_{fname}.jpg")
-                            base_img.point(lut).save(save_path, quality=90, subsampling=0)
+                            # 용량 최적화 (quality 90, subsampling 1)
+                            base_img.point(lut).save(save_path, quality=90, subsampling=1)
                             processed_now += 1
                         except: pass
-                except: pass
+                    
+                    del base_img
+                    
+                except Exception:
+                    pass
                 
-                # 메모리 정리 (중요)
-                del img, img_arr, base_img
+                # [필수] 가비지 컬렉션 (매 장마다 메모리 청소)
                 gc.collect()
                 progress_bar.progress((idx + 1) / len(uploaded_files))
             
             st.session_state['file_count'] += processed_now
-            st.success(f"✅ 방금 {processed_now}장 추가됨! (총 {st.session_state['file_count']}장)")
+            st.success(f"✅ 변환 완료! (총 {st.session_state['file_count']}장)")
             
-            # 새로고침하여 아래 다운로드 버튼 갱신
+            # 버튼 갱신을 위해 새로고침
             st.rerun()
 
-    # 3. 다운로드 섹션 (파일이 있을 때만 표시)
+    # 3. 분할 다운로드 섹션 (자동 생성)
     if st.session_state['file_count'] > 0:
         st.divider()
         st.subheader("📥 결과물 다운로드")
         
-        # 파일 목록 가져오기
+        # 저장된 파일 확인
         all_files = [f for f in os.listdir(st.session_state['storage_path']) if f.lower().endswith('.jpg')]
         all_files.sort()
         
         if not all_files:
-            st.warning("저장된 파일이 없습니다.")
+            st.warning("변환된 파일이 없습니다.")
         else:
-            # 50장씩 나누기 로직
+            # 50장씩 묶음 계산
             chunk_size = 50
             total_chunks = math.ceil(len(all_files) / chunk_size)
             
-            st.write(f"총 {len(all_files)}장을 **{total_chunks}개**의 파일로 나눠서 준비했습니다.")
+            st.info(f"파일이 많아서 **{total_chunks}개 꾸러미**로 나눠서 포장했습니다.")
             
-            # 버튼들을 3열로 예쁘게 배치
+            # 버튼 배치 (3열)
             cols = st.columns(min(3, max(1, total_chunks)))
             
             for i in range(total_chunks):
@@ -151,20 +164,20 @@ else:
                 zip_name = f"Result_Part_{part_num}.zip"
                 zip_path = os.path.join(st.session_state['storage_path'], zip_name)
                 
-                # ZIP 생성 (압축 안 함 = 속도 빠름 = 안 뻗음)
+                # ZIP 생성 (압축 안 함 = CPU 부하 없음 = 안 뻗음)
                 if not os.path.exists(zip_path):
                     with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_STORED) as zipf:
                         for file in chunk_files:
                             file_path = os.path.join(st.session_state['storage_path'], file)
                             zipf.write(file_path, arcname=file)
                 
-                # 버튼 표시
+                # 다운로드 버튼
                 with open(zip_path, "rb") as f:
                     with cols[i % 3]:
                         st.download_button(
-                            label=f"📦 {part_num}번 파일 ({len(chunk_files)}장)",
+                            label=f"📦 {part_num}번 ({len(chunk_files)}장)",
                             data=f,
                             file_name=zip_name,
                             mime="application/zip",
-                            key=f"down_{i}"
+                            key=f"dl_btn_{i}"
                         )
