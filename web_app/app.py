@@ -9,10 +9,10 @@ import zipfile
 import math
 
 # --- 페이지 설정 ---
-st.set_page_config(page_title="CAMPSMAP Ultra", page_icon="🛡️")
+st.set_page_config(page_title="CAMPSMAP Final", page_icon="📸")
 
-st.title("🛡️ CAMPSMAP (초경량 모드)")
-st.info("💡 **서버 다운 방지**를 위해 해상도를 1000px로 조정하고 메모리를 강제로 비웁니다.")
+st.title("📸 CAMPSMAP (대용량/안정화)")
+st.info("💡 **100장씩** 묶어서 다운로드 버튼을 생성합니다. (전송 오류 해결)")
 
 # --- 세션 초기화 ---
 if 'storage_path' not in st.session_state:
@@ -56,21 +56,20 @@ loaded_filters = load_filters()
 # --- 사이드바 ---
 with st.sidebar:
     st.header(f"📦 완료: {st.session_state['file_count']}장")
-    st.caption("메모리가 꽉 차면 초기화를 눌러주세요.")
-    if st.button("🗑️ 싹 비우기 (초기화)"):
+    if st.button("🗑️ 초기화 (새로 하기)"):
         try: shutil.rmtree(st.session_state['storage_path'])
         except: pass
         st.session_state['storage_path'] = tempfile.mkdtemp()
         st.session_state['file_count'] = 0
-        gc.collect() # 램 청소
+        gc.collect()
         st.rerun()
 
 # --- 메인 화면 ---
 if not loaded_filters:
-    st.error("⚠️ 필터 파일 없음")
+    st.error("⚠️ 필터 파일이 없습니다!")
 else:
     # 1. 업로더
-    uploaded_files = st.file_uploader("사진 추가 (너무 많이 올리면 서버가 힘들어요)", type=['png', 'jpg', 'jpeg'], accept_multiple_files=True)
+    uploaded_files = st.file_uploader("사진 추가", type=['png', 'jpg', 'jpeg'], accept_multiple_files=True)
 
     # 2. 변환 로직
     if uploaded_files:
@@ -82,32 +81,26 @@ else:
             
             for idx, uploaded_file in enumerate(uploaded_files):
                 status_text.text(f"처리 중... ({idx+1}/{len(uploaded_files)})")
-                
                 try:
-                    # [핵심 1] 이미지 열자마자 리사이징부터 수행 (1000px)
-                    # 원본 크기로 작업하면 램 부족으로 100% 뻗음
+                    # 이미지 열기 & 리사이징 (1280px)
                     img = Image.open(uploaded_file).convert('RGB')
                     img = ImageOps.exif_transpose(img)
-                    img.thumbnail((1000, 1000), Image.Resampling.LANCZOS)
+                    img.thumbnail((1280, 1280), Image.Resampling.LANCZOS)
                     
-                    # Numpy 변환
                     img_arr = np.array(img, dtype=np.float32)
                     h, w, c = img_arr.shape
                     
-                    # [핵심 2] 효과 적용 (변수 최소화)
+                    # 효과 적용
                     noise = np.random.normal(0, 12, (h, w, 1)).repeat(3, axis=2)
-                    
-                    # 마스크 계산도 즉석에서 처리하고 변수 삭제
                     x = np.linspace(-1, 1, w)
                     y = np.linspace(-1, 1, h)
                     X, Y = np.meshgrid(x, y)
                     mask = (1 - np.clip(np.sqrt(X**2 + Y**2) - 0.5, 0, 1) * 0.4)[:, :, np.newaxis].repeat(3, axis=2)
                     
-                    # 합성
                     img_arr = (img_arr + noise) * mask
                     base_img = Image.fromarray(np.clip(img_arr, 0, 255).astype(np.uint8))
                     
-                    # [핵심 3] 거대 변수들 즉시 삭제 (서버 다운 방지)
+                    # 메모리 확보 (중요)
                     del img, img_arr, noise, X, Y, mask
                     
                     # 필터 적용 및 저장
@@ -115,26 +108,22 @@ else:
                     for fname, lut in loaded_filters.items():
                         try:
                             save_path = os.path.join(st.session_state['storage_path'], f"{fname_prefix}_{fname}.jpg")
-                            # 용량 최적화 (quality 85, subsampling 1)
-                            base_img.point(lut).save(save_path, quality=85, subsampling=1)
+                            base_img.point(lut).save(save_path, quality=90, subsampling=1)
                             processed_now += 1
                         except: pass
                     
                     del base_img
                     
-                except Exception as e:
-                    print(f"Skipped {uploaded_file.name}: {e}")
-                    pass
+                except: pass
                 
-                # [핵심 4] 가비지 컬렉터 강제 실행 (매 장마다 청소)
-                gc.collect()
+                gc.collect() # 램 청소
                 progress_bar.progress((idx + 1) / len(uploaded_files))
             
             st.session_state['file_count'] += processed_now
-            st.success(f"✅ {processed_now}장 추가됨! (총 {st.session_state['file_count']}장)")
+            st.success(f"✅ 변환 완료! (총 {st.session_state['file_count']}장)")
             st.rerun()
 
-    # 3. 분할 다운로드 섹션
+    # 3. 다운로드 섹션
     if st.session_state['file_count'] > 0:
         st.divider()
         st.subheader("📥 결과물 다운로드")
@@ -145,11 +134,11 @@ else:
         if not all_files:
             st.warning("변환된 파일이 없습니다.")
         else:
-            # 50장씩 나누기
-            chunk_size = 50
+            # 100장씩 나누기 (버튼 개수 줄이기)
+            chunk_size = 100
             total_chunks = math.ceil(len(all_files) / chunk_size)
             
-            st.info(f"총 {len(all_files)}장을 **{total_chunks}개 꾸러미**로 나눴습니다.")
+            st.info(f"총 {len(all_files)}장을 **{total_chunks}개 파일**로 나눴습니다.")
             
             cols = st.columns(min(3, max(1, total_chunks)))
             
@@ -162,19 +151,21 @@ else:
                 zip_name = f"Result_Part_{part_num}.zip"
                 zip_path = os.path.join(st.session_state['storage_path'], zip_name)
                 
-                # ZIP 생성 (압축 안 함 = CPU 부하 없음)
+                # ZIP 생성 (표준 압축 사용 - 파일 용량 줄여서 전송 오류 방지)
                 if not os.path.exists(zip_path):
-                    with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_STORED) as zipf:
+                    with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
                         for file in chunk_files:
                             file_path = os.path.join(st.session_state['storage_path'], file)
                             zipf.write(file_path, arcname=file)
                 
-                with open(zip_path, "rb") as f:
-                    with cols[i % 3]:
-                        st.download_button(
-                            label=f"📦 {part_num}번 ({len(chunk_files)}장)",
-                            data=f,
-                            file_name=zip_name,
-                            mime="application/zip",
-                            key=f"dl_{i}"
-                        )
+                # 버튼 생성
+                if os.path.exists(zip_path):
+                    with open(zip_path, "rb") as f:
+                        with cols[i % 3]:
+                            st.download_button(
+                                label=f"📦 {part_num}번 ({len(chunk_files)}장)",
+                                data=f,
+                                file_name=zip_name,
+                                mime="application/zip",
+                                key=f"dl_btn_{i}"
+                            )
