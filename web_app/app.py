@@ -5,19 +5,18 @@ import os
 import shutil
 import tempfile
 import gc
-import zipfile  # zipfile 모듈 직접 사용
+import zipfile
 
 # --- 페이지 설정 ---
-st.set_page_config(page_title="CAMPSMAP Speed Lab", page_icon="⚡")
+st.set_page_config(page_title="CAMPSMAP Final", page_icon="📸")
 
-st.title("⚡ CAMPSMAP (고속 다운로드)")
-st.markdown("사진을 변환하고 **압축 없이 빠르게 묶어서** 다운로드합니다.")
+st.title("📸 CAMPSMAP (빠른 다운로드)")
+st.info("💡 사이드바를 열 필요가 없습니다. 변환 끝나면 여기에 바로 버튼이 뜹니다.")
 
 # --- 세션 초기화 ---
 if 'storage_path' not in st.session_state:
     st.session_state['storage_path'] = tempfile.mkdtemp()
     st.session_state['file_count'] = 0
-    st.session_state['zip_ready'] = False # ZIP 준비 여부 확인
 
 # --- 필터 로딩 ---
 @st.cache_data
@@ -52,65 +51,33 @@ def load_filters():
 
 loaded_filters = load_filters()
 
-# --- 사이드바 (다운로드 로직 개선) ---
+# --- 사이드바 (보조 기능) ---
 with st.sidebar:
-    st.header(f"📦 보관함: {st.session_state['file_count']}장")
-    
-    if st.session_state['file_count'] > 0:
-        st.write("---")
-        
-        # [핵심 변경] 사용자가 버튼을 눌러야만 압축 시작 (무한 로딩 방지)
-        if st.button("🎁 다운로드 파일 생성하기"):
-            zip_path = st.session_state['storage_path'] + ".zip"
-            folder_path = st.session_state['storage_path']
-            
-            with st.spinner("파일 묶는 중... (압축 안 함 = 빠름)"):
-                # ZIP_STORED: 압축하지 않고 그냥 담기만 함 (속도 매우 빠름)
-                with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_STORED) as zipf:
-                    for root, dirs, files in os.walk(folder_path):
-                        for file in files:
-                            # 이미 생성된 zip 파일은 제외
-                            if file.endswith(".zip"): continue
-                            file_path = os.path.join(root, file)
-                            zipf.write(file_path, arcname=file)
-            
-            st.session_state['zip_ready'] = True
-            st.success("생성 완료!")
-
-        # ZIP 파일이 준비되었을 때만 다운로드 버튼 표시
-        if st.session_state.get('zip_ready'):
-            zip_file_path = st.session_state['storage_path'] + ".zip"
-            if os.path.exists(zip_file_path):
-                with open(zip_file_path, "rb") as f:
-                    st.download_button(
-                        label="📥 ZIP 다운로드 (여기를 클릭)",
-                        data=f,
-                        file_name="Result.zip",
-                        mime="application/zip",
-                        type="primary"
-                    )
-
-        st.write("---")
-        if st.button("🗑️ 초기화"):
-            shutil.rmtree(st.session_state['storage_path'])
-            os.makedirs(st.session_state['storage_path'])
-            st.session_state['file_count'] = 0
-            st.session_state['zip_ready'] = False
-            st.rerun()
+    st.header(f"📦 누적: {st.session_state['file_count']}장")
+    st.caption("새로고침(F5) 하면 초기화됩니다.")
+    if st.button("🗑️ 모두 지우기"):
+        shutil.rmtree(st.session_state['storage_path'])
+        os.makedirs(st.session_state['storage_path'])
+        st.session_state['file_count'] = 0
+        st.rerun()
 
 # --- 메인 화면 ---
 if not loaded_filters:
-    st.error("⚠️ 필터 파일 없음")
+    st.error("⚠️ 필터 파일이 없습니다!")
 else:
-    uploaded_files = st.file_uploader("사진 선택", type=['png', 'jpg', 'jpeg'], accept_multiple_files=True)
+    uploaded_files = st.file_uploader("사진을 올려주세요", type=['png', 'jpg', 'jpeg'], accept_multiple_files=True)
 
     if uploaded_files:
+        # 버튼을 누르면 작업 시작
         if st.button(f"🚀 {len(uploaded_files)}장 변환 시작"):
             
             progress_bar = st.progress(0)
+            status_text = st.empty()
             processed_now = 0
             
+            # 1. 변환 작업
             for idx, uploaded_file in enumerate(uploaded_files):
+                status_text.text(f"처리 중... ({idx+1}/{len(uploaded_files)})")
                 try:
                     img = Image.open(uploaded_file).convert('RGB')
                     img = ImageOps.exif_transpose(img)
@@ -119,12 +86,12 @@ else:
                     img_arr = np.array(img, dtype=np.float32)
                     h, w, c = img_arr.shape
                     
+                    # 효과
                     noise = np.random.normal(0, 12, (h, w, 1)).repeat(3, axis=2)
                     x = np.linspace(-1, 1, w)
                     y = np.linspace(-1, 1, h)
                     X, Y = np.meshgrid(x, y)
                     mask = (1 - np.clip(np.sqrt(X**2 + Y**2) - 0.5, 0, 1) * 0.4)[:, :, np.newaxis].repeat(3, axis=2)
-                    
                     img_arr = (img_arr + noise) * mask
                     base_img = Image.fromarray(np.clip(img_arr, 0, 255).astype(np.uint8))
                     
@@ -140,10 +107,26 @@ else:
                 gc.collect()
                 progress_bar.progress((idx + 1) / len(uploaded_files))
             
+            # 2. 작업 완료 후 처리
             st.session_state['file_count'] += processed_now
-            # 변환 후 ZIP 상태 초기화 (새 파일이 들어왔으므로 다시 묶어야 함)
-            st.session_state['zip_ready'] = False 
-            st.success(f"✅ 변환 끝! 사이드바에서 '다운로드 파일 생성하기' 버튼을 누르세요.")
+            status_text.text("✅ 파일 묶는 중... (잠시만요)")
             
-            # 페이지 새로고침 제거 (메시지 유지)
-            # st.rerun()
+            # 3. [핵심] ZIP 파일 즉시 생성 (압축 안함 모드 = 빠름)
+            zip_path = os.path.join(st.session_state['storage_path'], "Result.zip")
+            with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_STORED) as zipf:
+                for root, dirs, files in os.walk(st.session_state['storage_path']):
+                    for file in files:
+                        if file == "Result.zip": continue
+                        zipf.write(os.path.join(root, file), arcname=file)
+            
+            # 4. 다운로드 버튼을 메인 화면에 바로 띄움
+            st.success(f"🎉 작업 끝! 아래 버튼을 눌러주세요.")
+            
+            with open(zip_path, "rb") as f:
+                st.download_button(
+                    label="📥 결과물 다운로드 (여기를 클릭!)",
+                    data=f,
+                    file_name="CAMPSMAP_Result.zip",
+                    mime="application/zip",
+                    type="primary" # 빨간색/강조색 버튼
+                )
