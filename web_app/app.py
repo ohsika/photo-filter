@@ -9,47 +9,36 @@ import zipfile
 import math
 
 # --- 페이지 설정 ---
-st.set_page_config(page_title="CAMPSMAP Debug", page_icon="🛠️")
+st.set_page_config(page_title="CAMPSMAP Final", page_icon="📸")
 
-st.title("📸 CAMPSMAP (진단 모드)")
-st.info("💡 이제 필터 로딩 여부와 상관없이 **업로더가 무조건 표시됩니다.**")
+st.title("📸 CAMPSMAP (대용량 통합)")
+st.info("💡 **300장씩** 꽉 채워서 포장합니다. 파일 개수를 확 줄였습니다.")
 
 # --- 세션 초기화 ---
 if 'storage_path' not in st.session_state:
     st.session_state['storage_path'] = tempfile.mkdtemp()
 if 'file_count' not in st.session_state:
     st.session_state['file_count'] = 0
-if 'uploader_key' not in st.session_state:
-    st.session_state['uploader_key'] = 0
 
-# --- 필터 로딩 (진단 기능 추가) ---
+# --- 필터 로딩 ---
 @st.cache_data
 def load_filters():
     filters = {}
-    debug_logs = []
-    
     current_dir = os.path.dirname(os.path.abspath(__file__))
     possible_paths = [
         os.path.join(current_dir, "Filters"),
         os.path.join(current_dir, "web_app", "Filters"),
-        "Filters",
-        "." # 현재 폴더까지 검색
+        "Filters"
     ]
-    
     for filter_dir in possible_paths:
         if os.path.exists(filter_dir):
-            debug_logs.append(f"✅ 폴더 찾음: {filter_dir}")
             try:
                 files = [f for f in os.listdir(filter_dir) if f.lower().endswith(('.fit', '.flt'))]
-                if not files:
-                    debug_logs.append(f"   -> ⚠️ 폴더는 있는데 .fit/.flt 파일이 없음")
-                
                 for fname in files:
                     full_path = os.path.join(filter_dir, fname)
                     with open(full_path, 'r', encoding='utf-8', errors='ignore') as f:
                         lines = f.readlines()
                     if len(lines) < 7: continue
-                    
                     def parse_line(line_str):
                         return [int(x) for x in line_str.replace(',', ' ').split() if x.strip().isdigit()]
                     r = parse_line(lines[4])
@@ -58,90 +47,33 @@ def load_filters():
                     full_lut = r + g + b
                     if len(full_lut) < 768: full_lut += [full_lut[-1]] * (768 - len(full_lut))
                     else: full_lut = full_lut[:768]
-                    
                     filters[os.path.splitext(fname)[0]] = full_lut
-            except Exception as e:
-                debug_logs.append(f"   -> ❌ 에러: {e}")
-        else:
-            debug_logs.append(f"❌ 폴더 없음: {filter_dir}")
-            
-    return filters, debug_logs
+            except: continue
+    return filters
 
-loaded_filters, logs = load_filters()
-
-# --- 디버깅 창 (문제가 뭔지 보여줌) ---
-with st.expander("🛠️ 필터 연결 상태 확인 (클릭)", expanded=False):
-    for log in logs:
-        st.text(log)
-    st.write(f"**총 로드된 필터 개수: {len(loaded_filters)}개**")
-
-if not loaded_filters:
-    st.error("⚠️ 필터를 찾지 못했습니다! 하지만 업로더는 표시해드립니다.")
-    st.warning("위의 [필터 연결 상태 확인]을 눌러서 경로를 확인해보세요.")
+loaded_filters = load_filters()
 
 # --- 사이드바 ---
 with st.sidebar:
-    st.header(f"📦 누적: {st.session_state['file_count']}장")
-    
-    # 다운로드 섹션
-    if st.session_state['file_count'] > 0:
-        st.divider()
-        st.subheader("📥 다운로드")
-        
-        all_files = [f for f in os.listdir(st.session_state['storage_path']) if f.lower().endswith('.jpg')]
-        all_files.sort()
-        
-        chunk_size = 50
-        total_chunks = math.ceil(len(all_files) / chunk_size)
-        
-        for i in range(total_chunks):
-            start = i * chunk_size
-            end = start + chunk_size
-            chunk_files = all_files[start:end]
-            part_num = i + 1
-            zip_name = f"Result_Part_{part_num}.zip"
-            zip_path = os.path.join(st.session_state['storage_path'], zip_name)
-            
-            if not os.path.exists(zip_path):
-                with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
-                    for file in chunk_files:
-                        file_path = os.path.join(st.session_state['storage_path'], file)
-                        zipf.write(file_path, arcname=file)
-            
-            with open(zip_path, "rb") as f:
-                st.download_button(
-                    label=f"📦 {part_num}번 파일 ({len(chunk_files)}장)",
-                    data=f,
-                    file_name=zip_name,
-                    mime="application/zip",
-                    key=f"dl_{i}"
-                )
-
-    st.divider()
+    st.header(f"📦 완료: {st.session_state['file_count']}장")
     if st.button("🗑️ 초기화"):
         try: shutil.rmtree(st.session_state['storage_path'])
         except: pass
         st.session_state['storage_path'] = tempfile.mkdtemp()
         st.session_state['file_count'] = 0
-        st.session_state['uploader_key'] += 1
         gc.collect()
         st.rerun()
 
-# --- 메인 화면 (업로더 무조건 표시) ---
-uploader_key = f"uploader_{st.session_state['uploader_key']}"
+# --- 메인 화면 ---
+if not loaded_filters:
+    st.error("⚠️ 필터 파일 없음")
+else:
+    # 1. 업로더
+    uploaded_files = st.file_uploader("사진 추가", type=['png', 'jpg', 'jpeg'], accept_multiple_files=True)
 
-uploaded_files = st.file_uploader(
-    "사진을 여기에 추가하세요 (무한 업로드 가능)", 
-    type=['png', 'jpg', 'jpeg'], 
-    accept_multiple_files=True,
-    key=uploader_key
-)
-
-if uploaded_files:
-    if not loaded_filters:
-        st.error("❌ 필터 파일이 없어서 변환을 시작할 수 없습니다.")
-    else:
-        if st.button(f"🚀 {len(uploaded_files)}장 변환 및 저장"):
+    # 2. 변환 로직
+    if uploaded_files:
+        if st.button(f"🚀 {len(uploaded_files)}장 변환 시작"):
             
             progress_bar = st.progress(0)
             status_text = st.empty()
@@ -152,7 +84,8 @@ if uploaded_files:
                 try:
                     img = Image.open(uploaded_file).convert('RGB')
                     img = ImageOps.exif_transpose(img)
-                    img.thumbnail((1280, 1280), Image.Resampling.LANCZOS)
+                    # 1000px 유지 (서버 안전)
+                    img.thumbnail((1000, 1000), Image.Resampling.LANCZOS)
                     
                     img_arr = np.array(img, dtype=np.float32)
                     h, w, c = img_arr.shape
@@ -172,7 +105,7 @@ if uploaded_files:
                     for fname, lut in loaded_filters.items():
                         try:
                             save_path = os.path.join(st.session_state['storage_path'], f"{fname_prefix}_{fname}.jpg")
-                            base_img.point(lut).save(save_path, quality=90, subsampling=1)
+                            base_img.point(lut).save(save_path, quality=85, subsampling=1)
                             processed_now += 1
                         except: pass
                     
@@ -184,7 +117,51 @@ if uploaded_files:
                 progress_bar.progress((idx + 1) / len(uploaded_files))
             
             st.session_state['file_count'] += processed_now
-            st.session_state['uploader_key'] += 1
-            
-            st.success(f"✅ {processed_now}장 저장 완료! (누적: {st.session_state['file_count']}장)")
+            st.success(f"✅ 변환 완료! (누적 {st.session_state['file_count']}장)")
             st.rerun()
+
+    # 3. 다운로드 섹션 (300장씩 묶음)
+    if st.session_state['file_count'] > 0:
+        st.divider()
+        st.subheader("📥 결과물 다운로드")
+        
+        all_files = [f for f in os.listdir(st.session_state['storage_path']) if f.lower().endswith('.jpg')]
+        all_files.sort()
+        
+        if not all_files:
+            st.warning("파일이 없습니다.")
+        else:
+            # [수정됨] 한 번에 300장씩 묶음 (ZIP 파일 개수 대폭 감소)
+            chunk_size = 300
+            total_chunks = math.ceil(len(all_files) / chunk_size)
+            
+            st.info(f"총 {len(all_files)}장을 **{total_chunks}개 파일**로 정리했습니다.")
+            
+            cols = st.columns(min(2, max(1, total_chunks)))
+            
+            for i in range(total_chunks):
+                start = i * chunk_size
+                end = start + chunk_size
+                chunk_files = all_files[start:end]
+                
+                part_num = i + 1
+                zip_name = f"CAMPSMAP_Pack_{part_num}.zip"
+                zip_path = os.path.join(st.session_state['storage_path'], zip_name)
+                
+                # ZIP 생성
+                if not os.path.exists(zip_path):
+                    with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
+                        for file in chunk_files:
+                            file_path = os.path.join(st.session_state['storage_path'], file)
+                            zipf.write(file_path, arcname=file)
+                
+                if os.path.exists(zip_path):
+                    with open(zip_path, "rb") as f:
+                        with cols[i % 2]:
+                            st.download_button(
+                                label=f"📦 {part_num}번 파일 ({len(chunk_files)}장)",
+                                data=f,
+                                file_name=zip_name,
+                                mime="application/zip",
+                                key=f"dl_btn_{i}"
+                            )
