@@ -10,7 +10,7 @@ import gc
 import math
 
 # --- 페이지 설정 ---
-st.set_page_config(page_title="CAMPSMAP Debugger", page_icon="🐞", layout="wide")
+st.set_page_config(page_title="CAMPSMAP Debugger", page_icon="🕵️", layout="wide")
 
 st.markdown("""
 <style>
@@ -19,103 +19,76 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# -----------------------------------------------------------
-# [긴급 진단] 파일 시스템 눈으로 확인하기
-# -----------------------------------------------------------
-with st.expander("🚨 필터가 안 보일 때 여기를 눌러보세요 (시스템 진단)", expanded=True):
-    current_dir = os.path.dirname(os.path.abspath(__file__))
-    st.write(f"📍 현재 앱이 실행되는 위치: `{current_dir}`")
-    
-    # 1. 현재 폴더에 무엇이 있는지 확인
-    try:
-        root_files = os.listdir(current_dir)
-        st.write(f"📂 현재 폴더 파일 목록 ({len(root_files)}개):", root_files)
-        
-        if "Filters" in root_files:
-            st.success("✅ 'Filters' 폴더가 발견되었습니다!")
-            filter_path = os.path.join(current_dir, "Filters")
-            inner_files = os.listdir(filter_path)
-            st.write(f"📂 Filters 폴더 안의 내용물 ({len(inner_files)}개):", inner_files)
-            
-            fit_files = [f for f in inner_files if f.lower().endswith(('.fit', '.flt'))]
-            if fit_files:
-                st.success(f"🎉 필터 파일 {len(fit_files)}개를 찾았습니다! (정상)")
-            else:
-                st.error("❌ Filters 폴더는 있는데, 그 안에 .fit / .flt 파일이 없습니다.")
-        else:
-            st.error("❌ 현재 위치에 'Filters' 폴더가 없습니다. 대소문자(Filters vs filters)를 확인하거나 파일이 업로드되었는지 확인하세요.")
-            
-    except Exception as e:
-        st.error(f"진단 중 오류 발생: {e}")
-# -----------------------------------------------------------
-
-# --- 필터 설명 ---
-FILTER_DESCRIPTIONS = {
-    "Classic": "표준 필름", "Vintage": "따뜻한 빈티지", "Mono": "부드러운 흑백",
-    "Kino": "영화 색감", "Kodaclone": "코닥 스타일", "101Clone": "도시적 감성",
-    "Art-Club": "몽환적 보라", "Boom-Boom": "강렬한 채도", "Bubblegum": "핑크 파스텔",
-    "Cross-Pross": "청록색 틴트", "Eternia": "물 빠진 감성", "Grunge": "거친 락시크",
-    "Midas": "황금빛 노을", "Narnia": "겨울 판타지", "Pastel": "순한 봄",
-    "Pistachio": "싱그러운 녹색", "Temporum": "세피아 추억", "Uddh": "대지의 색",
-    "X-Pro": "강한 대비", "Black_And_White": "강한 흑백", "Bleach": "묵직한 톤",
-    "Sinsa_Mood": "성수/신사 매트한 톤", "Hannam_Chic": "세련된 화이트",
-    "Fuji_Air": "후지필름 공기감", "Leica_Mono": "깊은 라이카 흑백",
-    "Cinestill_Night": "푸른 밤 감성", "Portrait_Soft": "인물 피부톤 보정",
-}
-
-# --- 필터 파일 생성기 (다운로드용) ---
-def generate_filter_zip():
-    zip_buffer = io.BytesIO()
-    def curve_s(x, intensity=0.04): return 255 / (1 + math.exp(-intensity * (x - 128)))
-    x_val = list(range(256))
-    
-    recipes = {
-        "Classic": ([curve_s(x, 0.04) for x in x_val], [curve_s(x, 0.04) for x in x_val], [curve_s(x, 0.04) for x in x_val]),
-        "Vintage": ([curve_s(x)*1.1+10 for x in x_val], [curve_s(x)*1.0+5 for x in x_val], [curve_s(x)*0.9 for x in x_val]),
-        "Mono": ([curve_s(x, 0.05) for x in x_val], [curve_s(x, 0.05) for x in x_val], [curve_s(x, 0.05) for x in x_val]),
-        # ... (필요 시 더 추가 가능, 용량상 줄임)
-    }
-    with zipfile.ZipFile(zip_buffer, "a", zipfile.ZIP_DEFLATED, False) as zip_file:
-        for name, (r, g, b) in recipes.items():
-            r = [min(255, max(0, int(v))) for v in r]
-            g = [min(255, max(0, int(v))) for v in g]
-            b = [min(255, max(0, int(v))) for v in b]
-            content = f"Filter Data\nCAMPSMAP\nRGB\n{', '.join(map(str, r))}\n{', '.join(map(str, g))}\n{', '.join(map(str, b))}\n"
-            zip_file.writestr(f"{name}.flt", content)
-    return zip_buffer.getvalue()
-
-# --- 필터 로딩 (강력한 탐색) ---
+# --- 필터 로딩 (정밀 진단 모드) ---
 @st.cache_data
-def load_filters():
+def load_filters_with_diagnosis():
     filters = {}
+    errors = [] # 에러 로그 저장소
+    
     current_dir = os.path.dirname(os.path.abspath(__file__))
-    # 탐색 경로를 더 다양하게 추가
     possible_paths = [
         os.path.join(current_dir, "Filters"),
-        os.path.join(current_dir, "filters"), # 소문자 대응
-        "Filters",
-        "filters"
+        "Filters"
     ]
     
-    for filter_dir in possible_paths:
-        if not os.path.exists(filter_dir): continue
+    found_path = None
+    for p in possible_paths:
+        if os.path.exists(p):
+            found_path = p
+            break
+            
+    if not found_path:
+        return filters, ["❌ 'Filters' 폴더 자체를 못 찾았습니다."]
+
+    # 파일 목록 가져오기
+    all_files = os.listdir(found_path)
+    target_files = [f for f in all_files if f.lower().endswith(('.fit', '.flt'))]
+    
+    for fname in target_files:
+        full_path = os.path.join(found_path, fname)
         try:
-            files = [f for f in os.listdir(filter_dir) if f.lower().endswith(('.fit', '.flt'))]
-            for fname in files:
-                f_name = os.path.splitext(fname)[0]
-                if f_name in filters: continue
-                with open(os.path.join(filter_dir, fname), 'r', encoding='utf-8', errors='ignore') as f:
-                    lines = f.readlines()
-                if len(lines) < 7: continue
-                lut = []
-                for i in range(4, 7):
-                    line_data = [int(x) for x in lines[i].replace(',', ' ').split() if x.strip().isdigit()]
-                    lut.extend(line_data)
-                if len(lut) < 768: lut += [lut[-1]] * (768 - len(lut))
-                else: lut = lut[:768]
-                filters[f_name] = lut
-        except: pass
-    return filters
+            with open(full_path, 'r', encoding='utf-8', errors='ignore') as f:
+                lines = f.readlines()
+            
+            # [진단 1] 파일 내용이 너무 짧음
+            if len(lines) < 3: 
+                errors.append(f"⚠️ {fname}: 내용이 너무 짧습니다 (줄 수 부족).")
+                continue
+
+            # 데이터 파싱 시도
+            lut = []
+            # 보통 4~7번째 줄 사이, 혹은 숫자만 있는 줄을 찾아서 파싱
+            data_lines_count = 0
+            for line in lines:
+                # 쉼표나 공백으로 분리해서 숫자가 10개 이상 있는 줄만 데이터로 인정
+                parts = [x for x in line.replace(',', ' ').split() if x.strip().replace('-','').isdigit()]
+                if len(parts) > 10:
+                    lut.extend([int(x) for x in parts])
+                    data_lines_count += 1
+            
+            # [진단 2] 숫자를 못 찾음
+            if len(lut) == 0:
+                errors.append(f"⚠️ {fname}: 파일 안에서 숫자 데이터를 찾을 수 없습니다.")
+                continue
+
+            # [진단 3] 데이터 개수 부족 (RGB LUT는 보통 768개 필요)
+            # 하지만 256개만 있는 경우(흑백)도 있으니 3배로 늘려줌
+            if len(lut) == 256:
+                lut = lut * 3
+            
+            if len(lut) < 768:
+                 # 모자라면 마지막 값으로 채움
+                lut += [lut[-1]] * (768 - len(lut))
+            else:
+                lut = lut[:768] # 넘치면 자름
+            
+            f_name_clean = os.path.splitext(fname)[0]
+            filters[f_name_clean] = lut
+
+        except Exception as e:
+            errors.append(f"❌ {fname}: 읽기 중 오류 발생 ({str(e)})")
+            
+    return filters, errors
 
 # --- 이미지 처리 ---
 def process_base_image(image_input, rotation=0, width=None):
@@ -150,15 +123,24 @@ if 'rotation_angle' not in st.session_state: st.session_state.rotation_angle = 0
 if 'upload_key' not in st.session_state: st.session_state.upload_key = 0
 
 # --- 메인 ---
-st.title("🎞️ CAMPSMAP Pro")
+st.title("🎞️ CAMPSMAP Pro (진단 모드)")
 
-with st.sidebar:
-    st.header("🛠️ 관리자 도구")
-    st.download_button("📥 필터 생성 및 다운로드 (ZIP)", data=generate_filter_zip(), file_name="CAMPSMAP_Filters.zip", mime="application/zip")
+# ------------------------------------------------
+# [진단 결과 표시 구역]
+# ------------------------------------------------
+loaded_filters, error_logs = load_filters_with_diagnosis()
 
-loaded_filters = load_filters()
-if not loaded_filters:
-    st.warning("⚠️ 필터가 로드되지 않았습니다! 상단 '시스템 진단'을 확인하세요.")
+with st.expander(f"📊 시스템 리포트 (성공: {len(loaded_filters)}개 / 실패: {len(error_logs)}개)", expanded=True):
+    if error_logs:
+        st.error("👇 아래 파일들은 문제가 있어서 로드되지 않았습니다.")
+        for err in error_logs:
+            st.write(err)
+        st.caption("해결법: 해당 파일의 내용이 올바른지 확인하거나, 다운로드 받은 정품(?) 필터를 다시 올려보세요.")
+    else:
+        st.success("모든 필터 파일이 완벽하게 로드되었습니다!")
+        st.write(f"로드된 필터: {', '.join(list(loaded_filters.keys()))}")
+
+# ------------------------------------------------
 
 uploaded_files = st.file_uploader("사진 업로드", type=['jpg', 'jpeg', 'png'], accept_multiple_files=True, key=f"uploader_{st.session_state.upload_key}")
 
@@ -173,7 +155,6 @@ if uploaded_files:
     total_files = len(uploaded_files)
     if st.session_state.current_index >= total_files:
         st.success(f"🎉 {st.session_state.saved_files_count}장 완료!")
-        st.balloons()
         zip_buffer = io.BytesIO()
         with zipfile.ZipFile(zip_buffer, "a", zipfile.ZIP_DEFLATED, False) as zip_file:
             for root, dirs, files in os.walk(st.session_state.temp_dir):
@@ -211,11 +192,9 @@ if uploaded_files:
                 for idx, f_name in enumerate(filter_names):
                     with cols[idx % 4]:
                         st.image(apply_lut(preview_img, loaded_filters[f_name]), use_container_width=True)
-                        desc = FILTER_DESCRIPTIONS.get(f_name, "")
-                        label = f"**{f_name}**\n:gray[{desc}]" if desc else f"**{f_name}**"
-                        selections[f_name] = st.checkbox(label, key=f"chk_{st.session_state.current_index}_{f_name}")
+                        selections[f_name] = st.checkbox(f"**{f_name}**", key=f"chk_{st.session_state.current_index}_{f_name}")
             else:
-                st.error("필터가 없습니다.")
+                st.error("로드된 필터가 없습니다.")
                 selections = {}
 
             st.divider()
@@ -232,8 +211,7 @@ if uploaded_files:
                 with st.spinner("저장 중..."):
                     for f_name in selected_filters:
                         final = apply_lut(full_base, loaded_filters[f_name])
-                        save_name = f"{fname_no_ext}_{f_name}.jpg"
-                        final.save(os.path.join(st.session_state.temp_dir, save_name), quality=95, subsampling=0)
+                        final.save(os.path.join(st.session_state.temp_dir, f"{fname_no_ext}_{f_name}.jpg"), quality=95, subsampling=0)
                         st.session_state.saved_files_count += 1
                 st.session_state.current_index += 1
                 st.rerun()
