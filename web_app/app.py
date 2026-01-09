@@ -16,23 +16,10 @@ st.markdown("""
 <style>
     div[data-testid="stImage"] { border-radius: 8px; overflow: hidden; }
     .stButton>button { border-radius: 8px; }
-    div.stButton { margin-top: 10px; }
+    /* 버튼 스타일 통일 */
+    div.stButton { margin-top: 5px; margin-bottom: 5px; }
 </style>
 """, unsafe_allow_html=True)
-
-# =================================================================
-# [설정] 필터 순서 바꾸는 곳 (여기에 적은 순서대로 먼저 나옵니다)
-# =================================================================
-PREFERRED_ORDER = [
-    # 1순위: 트렌디 / 느좋 감성
-    "Sinsa_Mood", "Hannam_Chic", "Fuji_Air", "Leica_Mono", "Cinestill_Night", "Portrait_Soft",
-    # 2순위: 베이직 / 인기 필터
-    "Classic", "Vintage", "Mono", "Kodaclone", "Kino", "101Clone",
-    # 3순위: 개성 있는 필터
-    "Eternia", "Narnia", "Black_And_White", "Film_Noir"
-    # 여기에 없는 나머지 필터들은 자동으로 이 뒤에 알파벳순으로 정렬됩니다.
-]
-# =================================================================
 
 # --- 필터 설명 ---
 FILTER_DESCRIPTIONS = {
@@ -46,62 +33,59 @@ FILTER_DESCRIPTIONS = {
     "Sinsa_Mood": "성수/신사 매트한 톤", "Hannam_Chic": "세련된 화이트",
     "Fuji_Air": "후지필름 공기감", "Leica_Mono": "깊은 라이카 흑백",
     "Cinestill_Night": "푸른 밤 감성", "Portrait_Soft": "인물 피부톤 보정",
-    "Film_Noir": "거친 느와르 영화"
 }
 
-# --- 필터 생성기 (다운로드용) ---
-def generate_filter_zip():
-    zip_buffer = io.BytesIO()
-    # 커브 함수
-    def s(x, i=0.04): return 255 / (1 + math.exp(-i * (x - 128)))
-    x_v = list(range(256))
-    
-    # 레시피
-    recipes = {
-        "Sinsa_Mood": ([s(x,0.03)*1.05 for x in x_v], [s(x,0.03)*1.02 for x in x_v], [s(x,0.03)*0.9+10 for x in x_v]),
-        "Hannam_Chic": ([s(x,0.05)*0.95 for x in x_v], [s(x,0.05) for x in x_v], [s(x,0.05)*1.1 for x in x_v]),
-        "Fuji_Air": ([x*0.95 for x in x_v], [s(x,0.04)*1.05 for x in x_v], [x*1.1+5 for x in x_v]),
-        "Leica_Mono": ([s(x,0.06) for x in x_v], [s(x,0.06) for x in x_v], [s(x,0.06) for x in x_v]),
-        "Classic": ([s(x) for x in x_v], [s(x) for x in x_v], [s(x) for x in x_v]),
-        "Vintage": ([s(x)*1.1+10 for x in x_v], [s(x)*1.0+5 for x in x_v], [s(x)*0.9 for x in x_v]),
-    }
-    # (용량 관계상 주요 필터만 생성 코드에 포함, 나머지는 기존 파일 사용 권장)
-    
-    with zipfile.ZipFile(zip_buffer, "a", zipfile.ZIP_DEFLATED, False) as zip_file:
-        for name, (r, g, b) in recipes.items():
-            r = [min(255, max(0, int(v))) for v in r]
-            g = [min(255, max(0, int(v))) for v in g]
-            b = [min(255, max(0, int(v))) for v in b]
-            content = f"Filter Data\nRGB\n{', '.join(map(str, r))}\n{', '.join(map(str, g))}\n{', '.join(map(str, b))}\n"
-            zip_file.writestr(f"{name}.flt", content)
-    return zip_buffer.getvalue()
-
-# --- 필터 로딩 ---
+# --- 필터 로딩 (정밀 진단 모드) ---
 @st.cache_data
-def load_filters():
+def load_filters_with_diagnosis():
     filters = {}
-    current_dir = os.path.dirname(os.path.abspath(__file__))
-    possible_paths = [os.path.join(current_dir, "Filters"), os.path.join(current_dir, "web_app", "Filters"), "Filters"]
+    errors = [] 
     
-    for filter_dir in possible_paths:
-        if not os.path.exists(filter_dir): continue
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    possible_paths = [os.path.join(current_dir, "Filters"), "Filters"]
+    
+    found_path = None
+    for p in possible_paths:
+        if os.path.exists(p):
+            found_path = p
+            break
+            
+    if not found_path:
+        return filters, ["❌ 'Filters' 폴더 자체를 못 찾았습니다."]
+
+    target_files = [f for f in os.listdir(found_path) if f.lower().endswith(('.fit', '.flt'))]
+    
+    for fname in target_files:
+        full_path = os.path.join(found_path, fname)
         try:
-            files = [f for f in os.listdir(filter_dir) if f.lower().endswith(('.fit', '.flt'))]
-            for fname in files:
-                f_name = os.path.splitext(fname)[0]
-                if f_name in filters: continue
-                with open(os.path.join(filter_dir, fname), 'r', encoding='utf-8', errors='ignore') as f:
-                    lines = f.readlines()
-                if len(lines) < 7: continue
-                lut = []
-                for i in range(4, 7):
-                    line_data = [int(x) for x in lines[i].replace(',', ' ').split() if x.strip().isdigit()]
-                    lut.extend(line_data)
-                if len(lut) < 768: lut += [lut[-1]] * (768 - len(lut))
-                else: lut = lut[:768]
-                filters[f_name] = lut
-        except: pass
-    return filters
+            with open(full_path, 'r', encoding='utf-8', errors='ignore') as f:
+                lines = f.readlines()
+            
+            if len(lines) < 3: 
+                errors.append(f"⚠️ {fname}: 내용이 너무 짧습니다.")
+                continue
+
+            lut = []
+            for line in lines:
+                parts = [x for x in line.replace(',', ' ').split() if x.strip().replace('-','').isdigit()]
+                if len(parts) > 10:
+                    lut.extend([int(x) for x in parts])
+            
+            if len(lut) == 0:
+                errors.append(f"⚠️ {fname}: 숫자 데이터 없음.")
+                continue
+
+            if len(lut) == 256: lut = lut * 3
+            if len(lut) < 768: lut += [lut[-1]] * (768 - len(lut))
+            else: lut = lut[:768]
+            
+            f_name_clean = os.path.splitext(fname)[0]
+            filters[f_name_clean] = lut
+
+        except Exception as e:
+            errors.append(f"❌ {fname}: 오류 ({str(e)})")
+            
+    return filters, errors
 
 # --- 이미지 처리 ---
 def process_base_image(image_input, rotation=0, width=None):
@@ -112,9 +96,8 @@ def process_base_image(image_input, rotation=0, width=None):
     if width:
         w_p = (width / float(img.size[0]))
         h_s = int((float(img.size[1]) * float(w_p)))
-        img = img.resize((width, h_size), Image.Resampling.LANCZOS)
+        img = img.resize((width, h_s), Image.Resampling.LANCZOS)
     
-    # 내추럴 필름 룩 (블러 0.1 / 비네팅 0.25 / 노이즈 6)
     base = img.filter(ImageFilter.GaussianBlur(0.1))
     w, h = base.size
     x, y = np.meshgrid(np.linspace(-1, 1, w).astype(np.float32), np.linspace(-1, 1, h).astype(np.float32))
@@ -129,27 +112,28 @@ def process_base_image(image_input, rotation=0, width=None):
 
 def apply_lut(image, lut): return image.convert('RGB').point(lut)
 
-# --- 세션 관리 ---
+# --- 세션 ---
 if 'temp_dir' not in st.session_state: st.session_state.temp_dir = tempfile.mkdtemp()
 if 'saved_files_count' not in st.session_state: st.session_state.saved_files_count = 0
 if 'current_index' not in st.session_state: st.session_state.current_index = 0
-if 'rotation_angle' not in st.session_state: st.session_state.rotation_angle = 0
+if 'rotation_angle' not in st.session_state: st.session_state.rotation_angle = 0 
 if 'upload_key' not in st.session_state: st.session_state.upload_key = 0
 
-# --- 메인 화면 ---
+# --- 메인 ---
 st.title("🎞️ CAMPSMAP Pro")
 
-with st.sidebar:
-    st.header("🛠️ 관리자 도구")
-    st.download_button("📥 주요 필터 생성 (ZIP)", data=generate_filter_zip(), file_name="CAMPSMAP_Filters.zip", mime="application/zip")
-
-loaded_filters = load_filters()
-if not loaded_filters:
-    st.warning("⚠️ 필터가 없습니다. 왼쪽 사이드바에서 다운로드 후 업로드하세요.")
+# ------------------------------------------------
+# [진단 결과 표시]
+loaded_filters, error_logs = load_filters_with_diagnosis()
+with st.expander(f"📊 시스템 리포트 (성공: {len(loaded_filters)}개)", expanded=False):
+    if error_logs:
+        for err in error_logs: st.write(err)
+    else:
+        st.success("모든 필터 정상 로드됨")
+# ------------------------------------------------
 
 uploaded_files = st.file_uploader("사진 업로드", type=['jpg', 'jpeg', 'png'], accept_multiple_files=True, key=f"uploader_{st.session_state.upload_key}")
 
-# 초기화
 if not uploaded_files:
     st.session_state.current_index = 0
     st.session_state.saved_files_count = 0
@@ -162,8 +146,7 @@ if uploaded_files:
     
     # (A) 완료 화면
     if st.session_state.current_index >= total_files:
-        st.success(f"🎉 {st.session_state.saved_files_count}장 현상 완료!")
-        st.balloons()
+        st.success(f"🎉 {st.session_state.saved_files_count}장 완료!")
         zip_buffer = io.BytesIO()
         with zipfile.ZipFile(zip_buffer, "a", zipfile.ZIP_DEFLATED, False) as zip_file:
             for root, dirs, files in os.walk(st.session_state.temp_dir):
@@ -176,13 +159,14 @@ if uploaded_files:
                 st.session_state.upload_key += 1
                 st.session_state.rotation_angle = 0
                 st.rerun()
-
+    
     # (B) 편집 화면
     else:
         gc.collect()
         current_file = uploaded_files[st.session_state.current_index]
         st.progress((st.session_state.current_index)/total_files)
         
+        # 정보 & 회전
         col_info, col_l, col_r = st.columns([4, 1, 1])
         with col_info: st.subheader(f"🖼️ [{st.session_state.current_index + 1}/{total_files}] {current_file.name}")
         with col_l: 
@@ -196,49 +180,95 @@ if uploaded_files:
 
         preview_img = process_base_image(current_file.getvalue(), rotation=st.session_state.rotation_angle, width=300)
         
+        # --- [FORM 시작] ---
         with st.form(key=f"form_{st.session_state.current_index}"):
-            # -----------------------------------------------------
-            # [필터 정렬 로직 적용]
-            # 1. 로드된 모든 필터 이름 가져오기
-            all_keys = list(loaded_filters.keys())
             
-            # 2. 선호하는 순서(PREFERRED_ORDER)에 있는 것들 먼저 배치
-            sorted_keys = [f for f in PREFERRED_ORDER if f in all_keys]
+            # ----------------------------------------------------
+            # [상단 버튼 구역] (사용자 요청 추가)
+            # ----------------------------------------------------
+            t_prev, t_save, t_skip = st.columns([1, 2, 1])
+            with t_prev:
+                # 첫 번째 사진이면 '이전' 버튼 비활성화
+                disable_prev = (st.session_state.current_index == 0)
+                top_go_prev = st.form_submit_button("⬅️ 이전", disabled=disable_prev, use_container_width=True)
+            with t_save:
+                top_submit = st.form_submit_button("✅ 저장 & 다음", type="primary", use_container_width=True)
+            with t_skip:
+                top_skip = st.form_submit_button("⏩ 패스", use_container_width=True)
             
-            # 3. 나머지는 알파벳 순으로 뒤에 붙이기
-            remaining_keys = sorted([f for f in all_keys if f not in PREFERRED_ORDER])
-            final_filter_list = sorted_keys + remaining_keys
-            # -----------------------------------------------------
+            st.divider()
 
-            cols = st.columns(4)
-            selections = {}
-            for idx, f_name in enumerate(final_filter_list):
-                with cols[idx % 4]:
-                    st.image(apply_lut(preview_img, loaded_filters[f_name]), use_container_width=True)
-                    desc = FILTER_DESCRIPTIONS.get(f_name, "")
-                    label = f"**{f_name}**\n:gray[{desc}]" if desc else f"**{f_name}**"
-                    selections[f_name] = st.checkbox(label, key=f"chk_{st.session_state.current_index}_{f_name}")
+            # 필터 선택 그리드
+            if loaded_filters:
+                filter_names = sorted(list(loaded_filters.keys()))
+                cols = st.columns(4)
+                selections = {}
+                for idx, f_name in enumerate(filter_names):
+                    with cols[idx % 4]:
+                        st.image(apply_lut(preview_img, loaded_filters[f_name]), use_container_width=True)
+                        desc = FILTER_DESCRIPTIONS.get(f_name, "")
+                        label = f"**{f_name}**\n:gray[{desc}]" if desc else f"**{f_name}**"
+                        selections[f_name] = st.checkbox(label, key=f"chk_{st.session_state.current_index}_{f_name}")
+            else:
+                st.error("로드된 필터가 없습니다.")
+                selections = {}
 
             st.divider()
-            b1, b2 = st.columns([2, 1])
-            with b1: submit = st.form_submit_button("✅ 저장 & 다음", type="primary", use_container_width=True)
-            with b2: skip = st.form_submit_button("⏩ 패스", use_container_width=True)
+            
+            # ----------------------------------------------------
+            # [하단 버튼 구역] (기존 유지)
+            # ----------------------------------------------------
+            b_prev, b_save, b_skip = st.columns([1, 2, 1])
+            with b_prev:
+                # 상단과 동일한 로직의 하단 버튼
+                bottom_go_prev = st.form_submit_button("⬅️ 이전 (Prev)", disabled=disable_prev, use_container_width=True)
+            with b_save:
+                bottom_submit = st.form_submit_button("✅ 저장 & 다음 (Save)", type="primary", use_container_width=True)
+            with b_skip:
+                bottom_skip = st.form_submit_button("⏩ 패스 (Skip)", use_container_width=True)
 
-        if submit:
+
+        # --- 로직 처리 (상단/하단 버튼 모두 작동하게 OR 조건 사용) ---
+
+        # 1. [저장 & 다음] 버튼
+        if top_submit or bottom_submit:
             selected_filters = [k for k, v in selections.items() if v]
-            if not selected_filters: st.warning("선택된 필터가 없습니다.")
+            if not selected_filters:
+                st.warning("선택된 필터가 없습니다.")
             else:
                 full_base = process_base_image(current_file.getvalue(), rotation=st.session_state.rotation_angle, width=2000)
                 fname_no_ext = os.path.splitext(current_file.name)[0]
                 with st.spinner("저장 중..."):
                     for f_name in selected_filters:
                         final = apply_lut(full_base, loaded_filters[f_name])
-                        save_name = f"{fname_no_ext}_{f_name}.jpg"
-                        final.save(os.path.join(st.session_state.temp_dir, save_name), quality=95, subsampling=0)
+                        final.save(os.path.join(st.session_state.temp_dir, f"{fname_no_ext}_{f_name}.jpg"), quality=95, subsampling=0)
                         st.session_state.saved_files_count += 1
                 st.session_state.current_index += 1
                 st.rerun()
 
-        if skip:
+        # 2. [스킵] 버튼
+        if top_skip or bottom_skip:
             st.session_state.current_index += 1
             st.rerun()
+
+        # 3. [이전] 버튼 (Undo 기능)
+        if top_go_prev or bottom_go_prev:
+            prev_index = st.session_state.current_index - 1
+            if prev_index >= 0:
+                # 이전 파일 정보 찾기
+                prev_file_name = uploaded_files[prev_index].name
+                prev_name_no_ext = os.path.splitext(prev_file_name)[0]
+                
+                # 임시 폴더에서 이전 파일의 저장본들 삭제 (Undo)
+                deleted_count = 0
+                for f in os.listdir(st.session_state.temp_dir):
+                    if f.startswith(f"{prev_name_no_ext}_"):
+                        try:
+                            os.remove(os.path.join(st.session_state.temp_dir, f))
+                            deleted_count += 1
+                        except: pass
+                
+                st.session_state.saved_files_count -= deleted_count
+                st.session_state.current_index = prev_index
+                st.toast(f"이전 사진으로 돌아갑니다. (취소된 저장: {deleted_count}장)")
+                st.rerun()
