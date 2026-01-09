@@ -8,27 +8,36 @@ import zipfile
 # --- 페이지 설정 ---
 st.set_page_config(page_title="CAMPSMAP Film Lab", page_icon="📸", layout="wide")
 
-# --- [사용자 설정] 필터 설명 적는 곳 ---
-# 가지고 계신 필터 파일 이름(확장자 제외)에 맞춰서 설명을 적어주세요.
-# 여기에 없는 파일은 기본 설명("Custom Filter")이 나옵니다.
-FILTER_INFO = {
-    "Classic": "🎞️ 가장 표준적인 필름 룩, 부드러운 대비",
-    "Vintage": "🍂 빛 바랜 느낌, 따뜻한 색감",
-    "Mono": "🕶️ 흑백 느와르 감성",
-    "Kino": "🎬 영화 같은 시네마틱 톤",
-    "Kodaclone": "📷 코닥 필름 스타일의 진한 색감",
-    "101Clone": "🏙️ 차분하고 모던한 도시 감성",
-    # 필요한 만큼 계속 추가하시면 됩니다.
-    # "파일이름": "설명",
+# ==========================================
+# [사용자 설정] 필터 설명 & 이름 정리
+# ==========================================
+# 1. 여기에 파일명(확장자 제외)과 설명을 적으세요.
+FILTER_DESCRIPTIONS = {
+    "Classic": "표준 필름 룩",
+    "Vintage": "따뜻한 빛바램",
+    "Mono": "흑백 느와르",
+    "Kino": "영화 같은 색감",
+    "Kodaclone": "코닥 스타일",
+    "101Clone": "도시적/차분함",
+    # 여기에 없는 파일은 "Custom Filter"라고 뜸
 }
 
-st.title("📸 CAMPSMAP Film Lab")
-st.markdown("""
-**나만의 필름 현상소에 오신 것을 환영합니다.**  
-디지털 사진에 아날로그의 온도와 질감을 입혀보세요.
-""")
+# 2. 이름이 너무 길 때 자동으로 줄여주는 함수
+def format_filter_name(name):
+    # (1) 불필요한 단어 제거 (예시: -Camper-Snapper 제거)
+    name = name.replace("-Camper-Snapper", "")
+    name = name.replace("_", " ") # 언더바를 공백으로
+    
+    # (2) 그래도 15글자 넘으면 잘라내기
+    if len(name) > 15:
+        return name[:13] + ".."
+    return name
+# ==========================================
 
-# --- 핵심 기능: 필터 로딩 ---
+st.title("📸 CAMPSMAP Film Lab")
+st.markdown("디지털 사진에 **아날로그 감성**을 입혀보세요.")
+
+# --- 필터 로딩 로직 ---
 @st.cache_data
 def load_filters():
     filters = {}
@@ -51,139 +60,156 @@ def load_filters():
                 full_path = os.path.join(filter_dir, fname)
                 with open(full_path, 'r', encoding='utf-8', errors='ignore') as f:
                     lines = f.readlines()
-                
                 if len(lines) < 7: continue
 
                 def parse_line(line_str):
                     return [int(x) for x in line_str.replace(',', ' ').split() if x.strip().isdigit()]
+                
+                # 데이터 파싱 및 보정
+                r = parse_line(lines[4])
+                g = parse_line(lines[5])
+                b = parse_line(lines[6])
+                full_lut = r + g + b
 
-                r_lut = parse_line(lines[4])
-                g_lut = parse_line(lines[5])
-                b_lut = parse_line(lines[6])
-                full_lut = r_lut + g_lut + b_lut
-
-                if len(full_lut) < 768:
-                    full_lut += [full_lut[-1]] * (768 - len(full_lut))
-                else:
-                    full_lut = full_lut[:768]
+                if len(full_lut) < 768: full_lut += [full_lut[-1]] * (768 - len(full_lut))
+                else: full_lut = full_lut[:768]
                 
                 filters[filter_name] = full_lut
         except: pass
     return filters
 
-# --- 이미지 처리 함수들 ---
-def add_film_grain(image, intensity=12):
+# --- 이미지 처리 함수 ---
+def process_image_effect(image, intensity_grain=12, intensity_vignette=0.4):
     if image.mode != 'RGB': image = image.convert('RGB')
-    img_arr = np.array(image, dtype=np.float32)
-    h, w, c = img_arr.shape
-    noise = np.random.normal(0, intensity, (h, w))
-    noise = np.repeat(noise[:, :, np.newaxis], 3, axis=2)
-    grainy_img = img_arr + noise
-    return Image.fromarray(np.clip(grainy_img, 0, 255).astype(np.uint8))
-
-def add_vignette(image, intensity=0.4):
-    if image.mode != 'RGB': image = image.convert('RGB')
+    
+    # 1. 비네팅
     width, height = image.size
     x = np.linspace(-1, 1, width)
     y = np.linspace(-1, 1, height)
     X, Y = np.meshgrid(x, y)
     radius = np.sqrt(X**2 + Y**2)
-    mask = 1 - np.clip(radius - 0.5, 0, 1) * intensity
+    mask = 1 - np.clip(radius - 0.5, 0, 1) * intensity_vignette
     mask = np.repeat(mask[:, :, np.newaxis], 3, axis=2)
-    img_arr = np.array(image, dtype=np.float32)
-    vignetted = img_arr * mask
-    return Image.fromarray(np.clip(vignetted, 0, 255).astype(np.uint8))
+    img_arr = np.array(image, dtype=np.float32) * mask
+    
+    # 2. 그레인
+    h, w, c = img_arr.shape
+    noise = np.random.normal(0, intensity_grain, (h, w))
+    noise = np.repeat(noise[:, :, np.newaxis], 3, axis=2)
+    grainy_img = img_arr + noise
+    
+    return Image.fromarray(np.clip(grainy_img, 0, 255).astype(np.uint8))
 
-# --- 메인 실행 로직 ---
+# --- UI 및 실행 로직 ---
+loaded_filters = load_filters()
 
-# 1. 사이드바: 필터 로드 및 선택
+# [사이드바] 필터 체크리스트 UI
 with st.sidebar:
     st.header("🎨 필터 선택")
-    loaded_filters = load_filters()
     
     if not loaded_filters:
-        st.error("⚠️ 로드된 필터가 없습니다.")
+        st.error("⚠️ 필터 파일이 없습니다.")
+        selected_filter_names = []
     else:
-        st.success(f"✅ {len(loaded_filters)}개의 필터 로드됨")
+        st.write(f"총 {len(loaded_filters)}개의 필터가 있습니다.")
         
-        # 필터 이름 리스트
-        all_filter_names = list(loaded_filters.keys())
+        # 전체 선택/해제 기능
+        col_all, col_none = st.columns(2)
+        all_checked = col_all.button("전체 선택")
+        none_checked = col_none.button("전체 해제")
         
-        # 필터 선택 박스 (설명 포함)
-        selected_filter_names = st.multiselect(
-            "적용할 필터를 선택하세요:",
-            options=all_filter_names,
-            default=all_filter_names, # 기본값: 전체 선택
-            format_func=lambda x: f"{x} - {FILTER_INFO.get(x, '')}" # 이름 옆에 설명 표시
-        )
-        
-        st.info("💡 Tip: 여러 개를 선택하면 한 번에 여러 버전으로 현상해줍니다.")
+        # 세션 상태로 체크박스 값 관리
+        if "filter_checks" not in st.session_state or all_checked:
+            st.session_state.filter_checks = {name: True for name in loaded_filters.keys()}
+        if none_checked:
+            st.session_state.filter_checks = {name: False for name in loaded_filters.keys()}
 
-# 2. 메인 화면: 업로드 및 결과
-col1, col2 = st.columns([1, 2])
+        # 체크리스트 출력 (Expander 안에 넣어서 깔끔하게)
+        selected_filter_names = []
+        with st.expander("필터 목록 열기/닫기", expanded=True):
+            for f_name in loaded_filters.keys():
+                # 이름 예쁘게 다듬기
+                display_name = format_filter_name(f_name)
+                # 설명 가져오기
+                desc = FILTER_DESCRIPTIONS.get(f_name, "Custom Filter")
+                
+                # 체크박스 라벨 디자인: [굵은 이름] - [설명]
+                label_md = f"**{display_name}**  \n:gray[{desc}]"
+                
+                # 체크박스 생성
+                is_checked = st.checkbox(
+                    label_md, 
+                    value=st.session_state.filter_checks.get(f_name, True),
+                    key=f"chk_{f_name}"
+                )
+                
+                if is_checked:
+                    selected_filter_names.append(f_name)
+
+# [메인 화면]
+col1, col2 = st.columns([1, 1.5])
 
 with col1:
     st.subheader("1. 사진 업로드")
-    uploaded_files = st.file_uploader("변환할 사진을 올려주세요 (JPG, PNG)", 
-                                      type=['png', 'jpg', 'jpeg'], accept_multiple_files=True)
+    uploaded_files = st.file_uploader("", type=['png', 'jpg', 'jpeg'], accept_multiple_files=True)
+    
+    # 선택된 필터 정보 표시
+    if selected_filter_names:
+        st.info(f"👉 **{len(selected_filter_names)}개**의 필터가 적용됩니다.")
+    else:
+        st.warning("👈 왼쪽에서 필터를 하나 이상 선택해주세요.")
 
 with col2:
-    st.subheader("2. 현상 결과")
+    st.subheader("2. 결과 다운로드")
     
-    # 실행 조건: 파일이 있고 + 필터도 선택되었을 때
     if uploaded_files and selected_filter_names:
-        if st.button(f"🎞️ {len(uploaded_files)}장 사진 현상 시작 (Start)"):
+        if st.button("🎞️ 현상 시작 (Start Processing)", type="primary", use_container_width=True):
             
             progress_bar = st.progress(0)
-            status_text = st.empty()
+            status_area = st.empty()
             zip_buffer = io.BytesIO()
             
-            total_operations = len(uploaded_files)
+            total_ops = len(uploaded_files)
             
             with zipfile.ZipFile(zip_buffer, "a", zipfile.ZIP_DEFLATED, False) as zip_file:
                 for idx, uploaded_file in enumerate(uploaded_files):
-                    status_text.text(f"Processing [{idx+1}/{total_operations}]: {uploaded_file.name}")
-                    progress_bar.progress((idx + 1) / total_operations)
+                    status_area.text(f"Processing... {uploaded_file.name}")
+                    progress_bar.progress((idx + 1) / total_ops)
                     
                     try:
-                        image = Image.open(uploaded_file)
-                        image = ImageOps.exif_transpose(image)
-                        image.thumbnail((2000, 2000), Image.Resampling.LANCZOS)
+                        # 이미지 열기 & 전처리
+                        img = Image.open(uploaded_file)
+                        img = ImageOps.exif_transpose(img)
+                        img.thumbnail((2000, 2000), Image.Resampling.LANCZOS)
                         
-                        # 공통 베이스 효과
-                        base_img = image.filter(ImageFilter.GaussianBlur(0.3))
-                        vignetted_img = add_vignette(base_img, intensity=0.4)
-                        grain_img = add_film_grain(vignetted_img, intensity=12)
+                        # 베이스 효과 (그레인/비네팅)
+                        base_img = img.filter(ImageFilter.GaussianBlur(0.3))
+                        ready_img = process_image_effect(base_img)
                         
-                        file_name_no_ext = os.path.splitext(uploaded_file.name)[0]
+                        fname_no_ext = os.path.splitext(uploaded_file.name)[0]
 
-                        # [핵심 변경] 선택된 필터만 반복
-                        for filter_name in selected_filter_names:
+                        # 선택된 필터들 적용
+                        for f_name in selected_filter_names:
                             try:
-                                lut_data = loaded_filters[filter_name]
-                                process_target = grain_img.convert('RGB')
-                                final_img = process_target.point(lut_data)
+                                lut = loaded_filters[f_name]
+                                final_img = ready_img.convert('RGB').point(lut)
                                 
-                                img_byte_arr = io.BytesIO()
-                                final_img.save(img_byte_arr, format='JPEG', quality=95, subsampling=0)
-                                
-                                zip_file.writestr(f"{file_name_no_ext}_{filter_name}.jpg", img_byte_arr.getvalue())
+                                # 메모리 저장 -> ZIP
+                                img_bytes = io.BytesIO()
+                                final_img.save(img_bytes, format='JPEG', quality=95, subsampling=0)
+                                zip_file.writestr(f"{fname_no_ext}_{f_name}.jpg", img_bytes.getvalue())
                             except: continue
-                                
+                            
                     except Exception as e:
-                        st.error(f"오류: {uploaded_file.name} - {e}")
+                        st.error(f"Error: {uploaded_file.name} - {e}")
 
-            status_text.text("✅ 현상 완료!")
+            status_area.success("✅ 모든 작업이 완료되었습니다!")
             progress_bar.progress(100)
             
-            st.success("작업이 완료되었습니다. 아래 버튼으로 다운로드하세요.")
             st.download_button(
-                label="📦 결과물 일괄 다운로드 (ZIP)",
+                label="📦 ZIP 파일 다운로드",
                 data=zip_buffer.getvalue(),
                 file_name="CAMPSMAP_Results.zip",
                 mime="application/zip",
                 use_container_width=True
             )
-    
-    elif uploaded_files and not selected_filter_names:
-        st.warning("👈 왼쪽 사이드바에서 적용할 필터를 최소 1개 이상 선택해주세요.")
