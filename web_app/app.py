@@ -132,4 +132,168 @@ def process_base_image(image_input, rotation=0, width=None):
     y = np.linspace(-1, 1, h).astype(np.float32)
     X, Y = np.meshgrid(x, y)
     radius = np.sqrt(X**2 + Y**2)
-    mask = 1 - np.clip(r
+    mask = 1 - np.clip(radius - 0.5, 0, 1) * 0.25 
+    mask = np.repeat(mask[:, :, np.newaxis], 3, axis=2)
+    
+    arr = np.array(base.convert('RGB'), dtype=np.float32) * mask
+    
+    noise = np.random.normal(0, 6, (h, w)).astype(np.float32)
+    noise = np.repeat(noise[:, :, np.newaxis], 3, axis=2)
+    
+    final = np.clip(arr + noise, 0, 255).astype(np.uint8)
+    
+    del arr, noise, X, Y, mask
+    return Image.fromarray(final)
+
+def apply_lut(image, lut):
+    return image.convert('RGB').point(lut)
+
+# --- 세션 관리 ---
+if 'temp_dir' not in st.session_state:
+    st.session_state.temp_dir = tempfile.mkdtemp()
+if 'saved_files_count' not in st.session_state:
+    st.session_state.saved_files_count = 0
+if 'current_index' not in st.session_state:
+    st.session_state.current_index = 0
+if 'rotation_angle' not in st.session_state:
+    st.session_state.rotation_angle = 0 
+if 'upload_key' not in st.session_state:
+    st.session_state.upload_key = 0
+
+# --- 메인 화면 ---
+st.title("🎞️ CAMPSMAP Pro")
+
+# --- [사이드바] 필터 관리자 ---
+with st.sidebar:
+    st.header("🛠️ 관리자 도구")
+    st.info("필터 파일이 없다면 아래 버튼을 눌러 다운로드 후, GitHub의 Filters 폴더에 올려주세요.")
+    
+    # 버튼을 누르면 필터를 즉석에서 만들어서 다운로드 제공
+    filters_zip_data = generate_filter_zip()
+    st.download_button(
+        label="📥 필터 파일 다운로드 (ZIP)",
+        data=filters_zip_data,
+        file_name="CAMPSMAP_Filters.zip",
+        mime="application/zip"
+    )
+
+loaded_filters = load_filters()
+if not loaded_filters:
+    st.warning("⚠️ 현재 적용된 필터가 없습니다. 왼쪽 사이드바에서 필터를 다운받아 GitHub에 업로드해주세요.")
+else:
+    st.success(f"✅ {len(loaded_filters)}개의 필터가 로드되었습니다.")
+
+uploaded_files = st.file_uploader(
+    "사진 업로드 (대량 가능)", 
+    type=['jpg', 'jpeg', 'png'], 
+    accept_multiple_files=True,
+    key=f"uploader_{st.session_state.upload_key}"
+)
+
+# 초기화
+if not uploaded_files:
+    st.session_state.current_index = 0
+    st.session_state.saved_files_count = 0
+    if os.path.exists(st.session_state.temp_dir):
+        shutil.rmtree(st.session_state.temp_dir)
+        st.session_state.temp_dir = tempfile.mkdtemp()
+
+if uploaded_files:
+    total_files = len(uploaded_files)
+    
+    # (A) 완료 화면
+    if st.session_state.current_index >= total_files:
+        st.success(f"🎉 {st.session_state.saved_files_count}장 현상 완료!")
+        st.balloons()
+        
+        zip_buffer = io.BytesIO()
+        with zipfile.ZipFile(zip_buffer, "a", zipfile.ZIP_DEFLATED, False) as zip_file:
+            for root, dirs, files in os.walk(st.session_state.temp_dir):
+                for file in files:
+                    file_path = os.path.join(root, file)
+                    zip_file.write(file_path, arcname=file)
+        
+        c1, c2 = st.columns(2)
+        with c1:
+            st.download_button("📦 전체 다운로드", data=zip_buffer.getvalue(), file_name="CAMPSMAP_Result.zip", mime="application/zip", type="primary", use_container_width=True)
+        with c2:
+            if st.button("🔄 새 작업 시작", use_container_width=True):
+                st.session_state.upload_key += 1
+                st.session_state.rotation_angle = 0
+                st.rerun()
+
+    # (B) 편집 화면
+    else:
+        gc.collect()
+        current_file = uploaded_files[st.session_state.current_index]
+        file_bytes = current_file.getvalue()
+        
+        st.progress((st.session_state.current_index) / total_files)
+        
+        # 정보 & 회전
+        col_info, col_l, col_r = st.columns([4, 1, 1])
+        with col_info:
+            st.subheader(f"🖼️ [{st.session_state.current_index + 1}/{total_files}] {current_file.name}")
+        with col_l:
+            if st.button("↺ 왼쪽 회전"):
+                st.session_state.rotation_angle = (st.session_state.rotation_angle + 90) % 360
+                st.rerun()
+        with col_r:
+            if st.button("↻ 오른쪽 회전"):
+                st.session_state.rotation_angle = (st.session_state.rotation_angle - 90) % 360
+                st.rerun()
+
+        # 미리보기
+        preview_img = process_base_image(file_bytes, rotation=st.session_state.rotation_angle, width=300)
+        
+        with st.form(key=f"form_{st.session_state.current_index}"):
+            # 로드된 필터가 없으면 버튼 비활성화 방지용 빈 리스트 처리
+            if loaded_filters:
+                filter_names = sorted(list(loaded_filters.keys()))
+            else:
+                filter_names = []
+                st.error("필터가 없습니다. 사이드바에서 다운로드 후 업로드하세요.")
+
+            cols = st.columns(4)
+            selections = {}
+            
+            for idx, f_name in enumerate(filter_names):
+                with cols[idx % 4]:
+                    thumb = apply_lut(preview_img, loaded_filters[f_name])
+                    st.image(thumb, use_container_width=True)
+                    desc = FILTER_DESCRIPTIONS.get(f_name, "")
+                    label = f"**{f_name}**"
+                    if desc: label += f"\n:gray[{desc}]"
+                    selections[f_name] = st.checkbox(label, key=f"chk_{st.session_state.current_index}_{f_name}")
+            
+            st.divider()
+            b1, b2 = st.columns([2, 1])
+            with b1:
+                submit = st.form_submit_button("✅ 저장 & 다음", type="primary", use_container_width=True)
+            with b2:
+                skip = st.form_submit_button("⏩ 패스", use_container_width=True)
+
+        if submit:
+            selected_filters = [k for k, v in selections.items() if v]
+            if not selected_filters:
+                st.warning("필터를 선택해주세요.")
+            else:
+                full_base = process_base_image(file_bytes, rotation=st.session_state.rotation_angle, width=2000)
+                fname_no_ext = os.path.splitext(current_file.name)[0]
+                
+                with st.spinner("저장 중..."):
+                    for f_name in selected_filters:
+                        final = apply_lut(full_base, loaded_filters[f_name])
+                        save_name = f"{fname_no_ext}_{f_name}.jpg"
+                        save_path = os.path.join(st.session_state.temp_dir, save_name)
+                        final.save(save_path, quality=95, subsampling=0)
+                        del final
+                        st.session_state.saved_files_count += 1
+                
+                del full_base
+                st.session_state.current_index += 1
+                st.rerun()
+
+        if skip:
+            st.session_state.current_index += 1
+            st.rerun()
