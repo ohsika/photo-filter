@@ -4,6 +4,7 @@ import numpy as np
 import os
 import io
 import zipfile
+import tempfile
 import shutil
 import gc
 import math
@@ -14,9 +15,14 @@ st.set_page_config(page_title="CAMPSMAP Pro", page_icon="📸", layout="wide")
 st.markdown("""
 <style>
     div[data-testid="stImage"] { border-radius: 8px; overflow: hidden; }
-    .stButton>button { border-radius: 8px; }
-    div.stButton { margin-top: 5px; margin-bottom: 5px; }
-    .status-box { padding: 10px; background-color: #f0f2f6; border-radius: 10px; text-align: center; font-weight: bold; margin-bottom: 10px; }
+    .stButton>button { border-radius: 8px; width: 100%; }
+    .status-container {
+        padding: 10px; 
+        background-color: #f0f2f6; 
+        border-radius: 10px; 
+        margin-bottom: 20px;
+        text-align: center;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -42,8 +48,7 @@ PREFERRED_ORDER = [
     "Eternia", "Narnia", "Black_And_White", "Film_Noir"
 ]
 
-# --- [핵심 수정] 스마트 필터 로더 ---
-# 줄 번호(4~7)를 고정하지 않고, 데이터가 있는 줄을 스스로 찾습니다.
+# --- 필터 로딩 ---
 @st.cache_data
 def load_filters():
     filters = {}
@@ -57,40 +62,26 @@ def load_filters():
             for fname in files:
                 f_name = os.path.splitext(fname)[0]
                 if f_name in filters: continue
-                
                 with open(os.path.join(filter_dir, fname), 'r', encoding='utf-8', errors='ignore') as f:
                     lines = f.readlines()
-                
-                # 데이터 파싱 (숫자가 많은 줄만 골라내기)
-                data_rows = []
-                for line in lines:
-                    # 쉼표나 공백으로 나눴을 때 숫자가 100개 이상이면 데이터 줄로 인식
-                    parts = [int(x) for x in line.replace(',', ' ').split() if x.strip().replace('-','').isdigit()]
-                    if len(parts) > 100:
-                        data_rows.append(parts)
-                
+                if len(lines) < 3: continue
                 lut = []
-                if len(data_rows) == 3: # RGB 3줄이 완벽하게 있는 경우
-                    lut = data_rows[0] + data_rows[1] + data_rows[2]
-                elif len(data_rows) == 1: # 흑백이라 1줄만 있는 경우
-                    lut = data_rows[0] * 3
-                else:
-                    continue # 데이터가 이상하면 건너뜀
-
-                # 개수 보정 (768개 맞추기)
+                for line in lines:
+                    parts = [int(x) for x in line.replace(',', ' ').split() if x.strip().replace('-','').isdigit()]
+                    if len(parts) > 10: lut.extend(parts)
+                if not lut: continue
+                if len(lut) == 256: lut = lut * 3
                 if len(lut) < 768: lut += [lut[-1]] * (768 - len(lut))
                 else: lut = lut[:768]
-                
                 filters[f_name] = lut
         except: pass
     return filters
 
-# --- 필터 생성기 (다운로드용) ---
+# --- 필터 다운로드 생성기 ---
 def generate_filter_zip():
     zip_buffer = io.BytesIO()
     def s(x, i=0.04): return 255 / (1 + math.exp(-i * (x - 128)))
     x_v = list(range(256))
-    
     recipes = {
         "Classic": ([s(x) for x in x_v], [s(x) for x in x_v], [s(x) for x in x_v]),
         "Vintage": ([s(x)*1.1+10 for x in x_v], [s(x)*1.0+5 for x in x_v], [s(x)*0.9 for x in x_v]),
@@ -98,21 +89,17 @@ def generate_filter_zip():
         "Hannam_Chic": ([s(x,0.05)*0.95 for x in x_v], [s(x,0.05) for x in x_v], [s(x,0.05)*1.1 for x in x_v]),
         "Fuji_Air": ([x*0.95 for x in x_v], [s(x,0.04)*1.05 for x in x_v], [x*1.1+5 for x in x_v]),
         "Leica_Mono": ([s(x,0.06) for x in x_v], [s(x,0.06) for x in x_v], [s(x,0.06) for x in x_v]),
-        "Cinestill_Night": ([x*0.8 if x<100 else x*1.2 for x in x_v], [x*1.05 for x in x_v], [x*1.2 if x<100 else x*0.8 for x in x_v]),
-        "Portrait_Soft": ([x+10 if 50<x<200 else x for x in x_v], [x+5 if 50<x<200 else x for x in x_v], [x for x in x_v])
     }
-    
     with zipfile.ZipFile(zip_buffer, "a", zipfile.ZIP_DEFLATED, False) as zip_file:
         for name, (r, g, b) in recipes.items():
             r = [min(255, max(0, int(v))) for v in r]
             g = [min(255, max(0, int(v))) for v in g]
             b = [min(255, max(0, int(v))) for v in b]
-            # 헤더를 명확하게 3줄 넣고 4번째 줄부터 데이터 시작
-            content = f"Filter\nInfo\nRGB\n{', '.join(map(str, r))}\n{', '.join(map(str, g))}\n{', '.join(map(str, b))}\n"
+            content = f"RGB\n{', '.join(map(str, r))}\n{', '.join(map(str, g))}\n{', '.join(map(str, b))}\n"
             zip_file.writestr(f"{name}.flt", content)
     return zip_buffer.getvalue()
 
-# --- 이미지 처리 (자연스러운 톤) ---
+# --- 이미지 처리 ---
 def process_base_image(image_input, rotation=0, width=None):
     if isinstance(image_input, bytes): img = Image.open(io.BytesIO(image_input))
     else: img = image_input
@@ -123,28 +110,21 @@ def process_base_image(image_input, rotation=0, width=None):
         h_s = int((float(img.size[1]) * float(w_p)))
         img = img.resize((width, h_s), Image.Resampling.LANCZOS)
     
-    # 1. 블러 (최소화)
     base = img.filter(ImageFilter.GaussianBlur(0.1))
-    
-    # 2. 비네팅 (아주 약하게)
     w, h = base.size
     x, y = np.meshgrid(np.linspace(-1, 1, w).astype(np.float32), np.linspace(-1, 1, h).astype(np.float32))
     mask = 1 - np.clip(np.sqrt(x**2 + y**2)-0.5, 0, 1)*0.25 
     mask = np.repeat(mask[:, :, np.newaxis], 3, axis=2)
-    
     arr = np.array(base.convert('RGB'), dtype=np.float32) * mask
-    
-    # 3. 그레인 (약하게)
-    noise = np.random.normal(0, 5, (h, w)).astype(np.float32)
+    noise = np.random.normal(0, 6, (h, w)).astype(np.float32)
     noise = np.repeat(noise[:, :, np.newaxis], 3, axis=2)
-    
     final = np.clip(arr + noise, 0, 255).astype(np.uint8)
     del arr, noise, mask
     return Image.fromarray(final)
 
 def apply_lut(image, lut): return image.convert('RGB').point(lut)
 
-# --- 세션 관리 (안전 저장소) ---
+# --- 세션 관리 ---
 WORK_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "temp_workspace")
 if not os.path.exists(WORK_DIR): os.makedirs(WORK_DIR)
 
@@ -153,22 +133,21 @@ if 'current_index' not in st.session_state: st.session_state.current_index = 0
 if 'rotation_angle' not in st.session_state: st.session_state.rotation_angle = 0 
 if 'upload_key' not in st.session_state: st.session_state.upload_key = 0
 
-# --- 메인 ---
+# --- 메인 UI 시작 ---
 st.title("🎞️ CAMPSMAP Pro")
 
 with st.sidebar:
     st.header("🛠️ 관리자")
-    # 필터가 깨졌을 경우를 대비해 다시 다운로드 받을 수 있게 함
-    st.download_button("📥 필터 생성 및 다운로드", data=generate_filter_zip(), file_name="CAMPSMAP_Filters.zip", mime="application/zip")
+    st.download_button("📥 필터 다운로드", data=generate_filter_zip(), file_name="CAMPSMAP_Filters.zip", mime="application/zip")
 
 loaded_filters = load_filters()
 if not loaded_filters:
-    st.error("⚠️ 필터를 찾을 수 없습니다. 왼쪽에서 다운로드 후 업로드하세요.")
+    st.warning("⚠️ 필터가 없습니다. 왼쪽에서 다운로드 후 업로드하세요.")
 
 uploaded_files = st.file_uploader("사진 업로드", type=['jpg', 'jpeg', 'png'], accept_multiple_files=True, key=f"uploader_{st.session_state.upload_key}")
 
+# 초기화
 if uploaded_files:
-    # 새 파일 업로드 시 초기화 체크
     if 'last_upload_count' not in st.session_state or st.session_state.last_upload_count != len(uploaded_files):
         st.session_state.last_upload_count = len(uploaded_files)
         st.session_state.current_index = 0
@@ -179,56 +158,70 @@ if uploaded_files:
 
     total_files = len(uploaded_files)
     
-    # 상태바
+    # [수정] 진행 바를 가장 먼저 표시 (무조건 보이게)
+    current_idx = st.session_state.current_index
+    progress_val = min(current_idx / total_files, 1.0)
+    st.progress(progress_val)
+    
+    # 상태 표시 박스
     st.markdown(f"""
-        <div class="status-box">
-            💾 저장됨: {st.session_state.saved_files_count}장 / 진행: {st.session_state.current_index+1}/{total_files}
+        <div class="status-container">
+            💾 저장된 사진: {st.session_state.saved_files_count}장 &nbsp; | &nbsp; 🖼️ 진행 순서: {current_idx + 1} / {total_files}
         </div>
     """, unsafe_allow_html=True)
 
-    # (A) 완료
-    if st.session_state.current_index >= total_files:
-        st.success(f"🎉 총 {st.session_state.saved_files_count}장의 사진 저장 완료!")
+    # (A) 완료 화면
+    if current_idx >= total_files:
+        st.success(f"🎉 총 {st.session_state.saved_files_count}장 작업 완료!")
         st.balloons()
+        
         zip_buffer = io.BytesIO()
         with zipfile.ZipFile(zip_buffer, "a", zipfile.ZIP_DEFLATED, False) as zip_file:
             for root, dirs, files in os.walk(WORK_DIR):
                 for file in files:
                     zip_file.write(os.path.join(root, file), arcname=file)
+        
         c1, c2 = st.columns(2)
-        with c1: st.download_button("📦 전체 다운로드", data=zip_buffer.getvalue(), file_name="CAMPSMAP_Result.zip", mime="application/zip", type="primary", use_container_width=True)
+        with c1: st.download_button("📦 전체 다운로드", data=zip_buffer.getvalue(), file_name="Result.zip", mime="application/zip", type="primary", use_container_width=True)
         with c2: 
-            if st.button("🔄 처음부터 다시"):
+            if st.button("🔄 새 작업 시작", use_container_width=True):
                 st.session_state.upload_key += 1
                 st.session_state.rotation_angle = 0
                 st.rerun()
     
-    # (B) 편집
+    # (B) 편집 화면
     else:
         gc.collect()
-        current_file = uploaded_files[st.session_state.current_index]
+        current_file = uploaded_files[current_idx]
         
-        c_info, c_l, c_r = st.columns([4, 1, 1])
-        with c_info: st.subheader(f"🖼️ {current_file.name}")
+        # 회전 컨트롤
+        c_l, c_title, c_r = st.columns([1, 4, 1])
         with c_l: 
-            if st.button("↺ 왼쪽"): 
+            if st.button("↺ 왼쪽 회전"): 
                 st.session_state.rotation_angle = (st.session_state.rotation_angle + 90) % 360
                 st.rerun()
+        with c_title:
+            st.markdown(f"<h3 style='text-align: center;'>{current_file.name}</h3>", unsafe_allow_html=True)
         with c_r: 
-            if st.button("↻ 오른쪽"): 
+            if st.button("↻ 오른쪽 회전"): 
                 st.session_state.rotation_angle = (st.session_state.rotation_angle - 90) % 360
                 st.rerun()
 
+        # 미리보기 생성
         preview_img = process_base_image(current_file.getvalue(), rotation=st.session_state.rotation_angle, width=300)
         
-        with st.form(key=f"form_{st.session_state.current_index}"):
-            # 상단 버튼
-            t_prev, t_save, t_skip = st.columns([1, 2, 1])
-            with t_prev: 
-                d_prev = (st.session_state.current_index == 0)
-                top_prev = st.form_submit_button("⬅️ 이전", disabled=d_prev, use_container_width=True)
-            with t_save: top_save = st.form_submit_button("✅ 저장 & 다음", type="primary", use_container_width=True)
-            with t_skip: top_skip = st.form_submit_button("⏩ 패스", use_container_width=True)
+        with st.form(key=f"form_{current_idx}"):
+            
+            # [수정] 상단 버튼 배치 (1:1:1 비율)
+            t1, t2, t3 = st.columns(3)
+            with t1:
+                # 이전 버튼 (첫장이면 비활성)
+                d_prev = (current_idx == 0)
+                top_prev = st.form_submit_button("⬅️ 이전", disabled=d_prev)
+            with t2:
+                top_save = st.form_submit_button("✅ 선택 저장", type="primary")
+            with t3:
+                top_skip = st.form_submit_button("⏩ 건너뛰기 (Pass)")
 
             st.divider()
 
@@ -245,15 +238,18 @@ if uploaded_files:
                     st.image(apply_lut(preview_img, loaded_filters[f_name]), use_container_width=True)
                     desc = FILTER_DESCRIPTIONS.get(f_name, "")
                     label = f"**{f_name}**\n:gray[{desc}]" if desc else f"**{f_name}**"
-                    selections[f_name] = st.checkbox(label, key=f"chk_{st.session_state.current_index}_{f_name}")
+                    selections[f_name] = st.checkbox(label, key=f"chk_{current_idx}_{f_name}")
 
             st.divider()
-            b_prev, b_save, b_skip = st.columns([1, 2, 1])
-            with b_prev: bot_prev = st.form_submit_button("⬅️ 이전", disabled=d_prev, use_container_width=True)
-            with b_save: bot_save = st.form_submit_button("✅ 저장 & 다음", type="primary", use_container_width=True)
-            with b_skip: bot_skip = st.form_submit_button("⏩ 패스", use_container_width=True)
+            
+            # 하단 버튼
+            b1, b2, b3 = st.columns(3)
+            with b1: bot_prev = st.form_submit_button("⬅️ 이전", disabled=d_prev)
+            with b2: bot_save = st.form_submit_button("✅ 선택 저장", type="primary")
+            with b3: bot_skip = st.form_submit_button("⏩ 건너뛰기 (Pass)")
 
-        # 로직
+        # --- 로직 ---
+        # 1. 저장
         if top_save or bot_save:
             selected = [k for k, v in selections.items() if v]
             if not selected:
@@ -270,12 +266,14 @@ if uploaded_files:
                 st.session_state.current_index += 1
                 st.rerun()
 
+        # 2. 패스
         if top_skip or bot_skip:
             st.session_state.current_index += 1
             st.rerun()
 
+        # 3. 이전
         if top_prev or bot_prev:
-            prev_idx = st.session_state.current_index - 1
+            prev_idx = current_idx - 1
             if prev_idx >= 0:
                 prev_file_name = uploaded_files[prev_idx].name
                 prev_no_ext = os.path.splitext(prev_file_name)[0]
@@ -290,5 +288,5 @@ if uploaded_files:
                 st.session_state.saved_files_count -= deleted
                 if st.session_state.saved_files_count < 0: st.session_state.saved_files_count = 0
                 st.session_state.current_index = prev_idx
-                st.toast(f"취소됨 ({deleted}장)")
+                st.toast(f"이전으로 돌아감 (취소된 사진: {deleted}장)")
                 st.rerun()
